@@ -181,13 +181,9 @@
 		z-index: -1;
 		pointer-events: none;
 		background-image:
-			radial-gradient(ellipse 620px 380px at 50% 140px, var(--glow), transparent 70%),
 			linear-gradient(var(--grid) 1px, transparent 1px),
 			linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-		background-size:
-			auto,
-			40px 40px,
-			40px 40px;
+		background-size: 40px 40px;
 		background-position: center top;
 		-webkit-mask-image: linear-gradient(to bottom, #000 35%, transparent);
 		mask-image: linear-gradient(to bottom, #000 35%, transparent);
