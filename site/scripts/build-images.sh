@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Regenerate the optimized images in static/ from the sources in assets-src/.
-# Needs ImageMagick (with AVIF), cwebp and Google Chrome (renders the SVG icon and the OG card).
+# Needs ImageMagick (with AVIF), cwebp and Google Chrome or Chromium (renders the SVG icon and the
+# OG card). Set CHROME to the browser's executable if it isn't found.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -8,7 +9,20 @@ src=assets-src
 out=static
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-chrome=${CHROME:-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"}
+
+chrome=${CHROME:-}
+if [[ -z $chrome ]]; then
+	for candidate in google-chrome google-chrome-stable chromium chromium-browser \
+		"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"; do
+		if chrome=$(command -v "$candidate"); then
+			break
+		fi
+	done
+fi
+if [[ ! -x $chrome ]]; then
+	echo "build-images.sh: Chrome or Chromium not found; set CHROME to its executable." >&2
+	exit 1
+fi
 
 render() { # render <url> <width> <height> <out.png>
 	"$chrome" --headless=new --disable-gpu --hide-scrollbars --force-device-scale-factor=1 \

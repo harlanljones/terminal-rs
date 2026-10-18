@@ -4,7 +4,9 @@ The download page for terminal-rs. It is one static page built with SvelteKit fo
 `/download` route that redirects to the latest release DMG.
 
 This folder is its own npm project, separate from the Cargo workspace. Run the commands below from
-`site/`, and set the Vercel project's Root Directory to `site`.
+`site/`, and set the Vercel project's Root Directory to `site`. It needs Node 22.17 or later, the
+minimum SvelteKit supports; `.npmrc` turns on `engine-strict`, so `npm install` stops on older
+versions.
 
 ```sh
 cd site
@@ -35,7 +37,10 @@ npm run check
 `hero-light.png`), the icon (`icon.svg`) and the Open Graph card template (`og.html`).
 `scripts/build-images.sh` regenerates everything in `static/` from them: AVIF and WebP screenshots
 at 1080 and 2160 px wide, a cropped screenshot for phones, the icon, favicons, the touch icon and
-`og.jpg`. It needs ImageMagick with AVIF support, `cwebp` and Google Chrome.
+`og.jpg`. It needs ImageMagick with AVIF support, `cwebp`, and Google Chrome or Chromium. The
+script finds `google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on your
+`PATH`, then Chrome in `/Applications`. Set `CHROME` to the browser's executable to use another
+one.
 
 ```sh
 ./scripts/build-images.sh
