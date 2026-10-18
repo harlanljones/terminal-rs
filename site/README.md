@@ -39,8 +39,8 @@ npm run check
 at 1080 and 2160 px wide, a cropped screenshot for phones, the icon, favicons, the touch icon and
 `og.jpg`. It needs ImageMagick with AVIF support, `cwebp`, and Google Chrome or Chromium. The
 script finds `google-chrome`, `google-chrome-stable`, `chromium` or `chromium-browser` on your
-`PATH`, then Chrome in `/Applications`. Set `CHROME` to the browser's executable to use another
-one.
+`PATH`, then Chrome in `/Applications`. To use another browser, set `CHROME` to its path or
+command name, such as `CHROME=brave-browser`.
 
 ```sh
 ./scripts/build-images.sh
