@@ -37,6 +37,92 @@ pub const PANELS: [(&str, &str); 14] = [
     ("Help", "HELP"),
 ];
 
+/// Length of a dock transition (panes added, closed, moved, or a layout switch).
+const DOCK_SECS: f32 = 0.42;
+
+/// Eases the dock between arrangements: when panes are added, closed or moved, groups
+/// glide from where they were to their new rectangles and new groups rise and fade in
+/// (staggered, for a layout switch). Window and divider resizes follow immediately.
+#[derive(Default)]
+pub(super) struct DockMotion {
+    /// Sorted pane ids per group last frame, to notice structural changes.
+    shape: Vec<Vec<PaneId>>,
+    /// Rectangles shown last frame, by group key.
+    shown: HashMap<PaneId, Rect>,
+    /// Where each surviving group started the current transition.
+    from: HashMap<PaneId, Rect>,
+    /// Groups new in the current transition, by key, with their stagger rank.
+    new: HashMap<PaneId, usize>,
+    start: Option<f64>,
+}
+
+impl DockMotion {
+    /// A group keeps its key while it keeps its oldest pane.
+    fn key(g: &crate::dock::Group) -> PaneId {
+        g.panes.iter().copied().min().unwrap_or(0)
+    }
+
+    /// Move `groups` to where they are shown this frame; returns how far each has
+    /// appeared (1 = fully).
+    fn apply(&mut self, ctx: &egui::Context, groups: &mut [crate::dock::Group]) -> Vec<f32> {
+        let mut shape: Vec<Vec<PaneId>> = groups
+            .iter()
+            .map(|g| {
+                let mut p = g.panes.clone();
+                p.sort_unstable();
+                p
+            })
+            .collect();
+        shape.sort_unstable();
+        let now = ctx.input(|i| i.time);
+        if shape != self.shape {
+            // The first arrangement shows as is.
+            if !self.shape.is_empty() {
+                self.from.clear();
+                self.new.clear();
+                for g in groups.iter() {
+                    let k = Self::key(g);
+                    match self.shown.get(&k) {
+                        Some(r) => {
+                            self.from.insert(k, *r);
+                        }
+                        None => {
+                            let rank = self.new.len();
+                            self.new.insert(k, rank);
+                        }
+                    }
+                }
+                self.start = Some(now);
+            }
+            self.shape = shape;
+        }
+        let t = self.start.map_or(1.0, |s| anim::since(ctx, now - s, DOCK_SECS));
+        if t >= 1.0 {
+            self.start = None;
+        }
+        self.shown.clear();
+        groups
+            .iter_mut()
+            .map(|g| {
+                let k = Self::key(g);
+                let mut appear = 1.0;
+                if t < 1.0 {
+                    if let Some(from) = self.from.get(&k) {
+                        let e = anim::ease_out(anim::span(t, 0.0, 0.8));
+                        g.rect = Rect::from_min_max(from.min.lerp(g.rect.min, e), from.max.lerp(g.rect.max, e));
+                    } else if let Some(&rank) = self.new.get(&k) {
+                        let delay = 0.1 + (rank as f32 * 0.08).min(0.3);
+                        appear = anim::ease_out(anim::span(t, delay, delay + 0.6));
+                        g.rect = g.rect.translate(vec2(0.0, 14.0 * (1.0 - appear)));
+                    }
+                }
+                self.shown.insert(k, g.rect);
+                appear
+            })
+            .collect()
+    }
+}
+
 /// Saved-layout operations from the sidebar, settings and command line.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutOp {
@@ -868,9 +954,13 @@ impl TerminalApp {
         if self.dock.is_empty() {
             self.empty_state(ui, area, &mut cmds);
         }
-        let (groups, dividers) = self.dock.layout(area, gap);
-        for g in &groups {
+        let (mut groups, dividers) = self.dock.layout(area, gap);
+        let appear = self.dock_motion.apply(ui.ctx(), &mut groups);
+        for (g, a) in groups.iter().zip(appear) {
+            let opacity = ui.opacity();
+            ui.multiply_opacity(a);
             self.render_group(ui, g, &mut actions, &mut cmds);
+            ui.set_opacity(opacity);
         }
         for d in &dividers {
             let hit = d.rect.expand(2.0);
@@ -1130,7 +1220,12 @@ impl TerminalApp {
         // Content.
         let content = Rect::from_min_max(pos2(inner.left(), strip.bottom()), inner.max);
         let Some(i) = self.idx(active) else { return };
+        // Switching tabs fades the new content in.
+        let fade = anim::ease_out(anim::progress(ui.ctx(), Id::new(("tab-fade", DockMotion::key(g))), active, 0.22));
+        let opacity = ui.opacity();
+        ui.multiply_opacity(fade);
         let (mut acts, clicked) = self.render_content(ui, i, content, focused);
+        ui.set_opacity(opacity);
         // Clicks in a linked list panel drive its link group.
         if let Some(l) = self.panes[i].link
             && !self.panes[i].kind.follows_symbol()
@@ -1470,5 +1565,39 @@ mod tests {
         let t = drop_target(area, &gs, pos2(500.0, 595.0), 1).unwrap();
         m.insert_at(&t.path, t.zone, 1);
         assert!(matches!(&m, Node::Split { dir: Dir::Column, .. }));
+    }
+
+    #[test]
+    fn dock_motion_glides_splits_and_follows_resizes() {
+        let ctx = egui::Context::default();
+        let mut motion = DockMotion::default();
+        let mut step = |n: &Node, t: f64, width: f32| {
+            let area = Rect::from_min_size(pos2(0.0, 0.0), vec2(width, 600.0));
+            let mut gs = n.layout(area, 6.0).0;
+            let target: Vec<Rect> = gs.iter().map(|g| g.rect).collect();
+            let mut appear = Vec::new();
+            let input = egui::RawInput { time: Some(t), ..Default::default() };
+            ctx.run_ui(input, |ui| appear = motion.apply(ui.ctx(), &mut gs)).textures_delta.clear();
+            (gs.iter().map(|g| g.rect).collect::<Vec<_>>(), target, appear)
+        };
+        // The first arrangement and plain resizes show as laid out.
+        let one = Node::preset(Layout::One, &[1]);
+        let (shown, target, appear) = step(&one, 0.0, 1000.0);
+        assert_eq!((shown, appear), (target, vec![1.0]));
+        let (shown, target, _) = step(&one, 0.1, 900.0);
+        assert_eq!(shown, target);
+
+        // Splitting: the old pane starts where it was and glides; the new one rises in.
+        let mut two = one.clone();
+        two.insert(1, Zone::Right, 2);
+        let (shown, target, appear) = step(&two, 1.0, 900.0);
+        assert_eq!(shown[0].width(), 900.0, "starts at its old size");
+        assert_eq!(appear[1], 0.0);
+        assert!(shown[1].top() > target[1].top());
+        let (shown, target, appear) = step(&two, 1.0 + DOCK_SECS as f64 * 0.5, 900.0);
+        assert!(shown[0].width() < 900.0 && shown[0].width() > target[0].width());
+        assert!(appear[1] > 0.0 && appear[1] < 1.0);
+        let (shown, target, appear) = step(&two, 2.0, 900.0);
+        assert_eq!((shown, appear), (target, vec![1.0, 1.0]));
     }
 }
