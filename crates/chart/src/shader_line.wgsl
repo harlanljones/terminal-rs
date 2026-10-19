@@ -82,3 +82,17 @@ fn vs_hist(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let cx = x_ndc(a.x);
     return rect(vi, cx - half, cx + half, y_ndc(u.extra.w), y_ndc(mix(u.extra.w, a.y, g)), color);
 }
+
+// Square marker centred on point ii (e.g. parabolic SAR), sized from the line thickness.
+@vertex
+fn vs_dots(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
+    let a = pts[ii];
+    if (!finite(a.y)) {
+        return degenerate();
+    }
+    let hx = px_to_ndc_x(u.params.z * 1.25);
+    let hy = px_to_ndc_y(u.params.z * 1.25);
+    let cx = x_ndc(a.x);
+    let cy = y_ndc(a.y);
+    return rect(vi, cx - hx, cx + hx, cy - hy, cy + hy, u.color);
+}

@@ -143,7 +143,7 @@ pub fn visible_extent(
         }
         _ => p.extent(k, lo, hi)?,
     };
-    for o in overlays.iter().filter(|o| o.kind == LineKind::Line) {
+    for o in overlays.iter().filter(|o| matches!(o.kind, LineKind::Line | LineKind::Dots)) {
         let kk = level_for(v.bar_px, o.line.pyramid.levels());
         if let Some((a, b)) = o.line.pyramid.extent(kk, lo, hi) {
             l = l.min(a * o.scale);
@@ -250,7 +250,7 @@ fn overlay_cmds(overlays: &[Overlay], v: &Viewport, t: &PaneTransform, base: &St
                 }
             }
             let range = match o.kind {
-                LineKind::Hist => {
+                LineKind::Hist | LineKind::Dots => {
                     s.hist_width_bars = (base.body_frac as f64 * (1u64 << k) as f64) as f32;
                     let n = lp.level_len(k);
                     let off = lp.offsets[k];
@@ -439,5 +439,30 @@ mod tests {
         assert!(out.scale.lo < -0.9 && out.scale.hi > 0.9);
         let fixed = sub_pane(&[o], &v, 100.0, Some((0.0, 100.0)), Style::default());
         assert_eq!((fixed.scale.lo, fixed.scale.hi), (0.0, 100.0));
+    }
+
+    #[test]
+    fn dots_draw_one_instance_per_point_and_scale_the_price_pane() {
+        let bars = sample::generate("X", Timeframe::D1, 200, 1_790_000_000);
+        let s = SeriesGpu::build(&bars);
+        let v = Viewport::fit_last(200, 200, 800.0);
+        let top = bars.iter().map(|b| b.high).fold(f64::MIN, f64::max) * 2.0;
+        let mut marks = vec![f64::NAN; 200];
+        marks[150] = top;
+        let o = Overlay { line: line_ref(&marks), color: [1.0; 4], kind: LineKind::Dots, scale: 1.0 };
+        let out = price_pane(&PricePane {
+            series: &s,
+            chart_type: ChartType::Candles,
+            show_volume: false,
+            overlays: std::slice::from_ref(&o),
+            viewport: &v,
+            height_px: 400.0,
+            log: false,
+            manual_scale: None,
+            style: Style::default(),
+        });
+        let Some(DrawCmd::Line { kind: LineKind::Dots, range, .. }) = out.cmds.last() else { panic!("no dots drawn") };
+        assert_eq!(range.1 - range.0, 200);
+        assert!(out.scale.hi >= top);
     }
 }
