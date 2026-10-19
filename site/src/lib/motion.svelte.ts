@@ -64,7 +64,8 @@ export function loop(duration: number, settled: number) {
 
 /**
  * Fades and lifts an element in the first time it scrolls into view. Elements start visible and are
- * only hidden here, so the page still reads without JavaScript.
+ * only hidden here, so the page still reads without JavaScript. Teardown shows the element, since
+ * turning on reduced motion reruns this without the observer that would have.
  */
 export const reveal: Attachment<HTMLElement> = (node) => {
 	if (reducedMotion.current || node.getBoundingClientRect().top < innerHeight) return;
@@ -78,5 +79,8 @@ export const reveal: Attachment<HTMLElement> = (node) => {
 		{ threshold: 0.15, rootMargin: '0px 0px -40px 0px' }
 	);
 	observer.observe(node);
-	return () => observer.disconnect();
+	return () => {
+		observer.disconnect();
+		node.dataset.shown = '';
+	};
 };

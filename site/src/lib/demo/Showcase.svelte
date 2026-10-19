@@ -71,7 +71,12 @@
 			{#each chapters as c, i (c.label)}
 				{@const p = span(player.time, c.t, c.end)}
 				<li style:flex-grow={c.end - c.t}>
-					<button type="button" class={{ active: p > 0 && p < 1 }} onclick={() => player.seek(c.t)}>
+					<button
+						type="button"
+						class={{ active: p > 0 && p < 1 }}
+						aria-label="Chapter {i + 1}: {c.label}"
+						onclick={() => player.seek(c.t)}
+					>
 						<span class="track"><span class="fill" style:transform="scaleX({p})"></span></span>
 						<span class="label"><span class="num">{i + 1}</span>{c.label}</span>
 					</button>
