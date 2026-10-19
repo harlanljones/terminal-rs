@@ -84,14 +84,16 @@ fn vs_hist(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
 }
 
 // Square marker centred on point ii (e.g. parabolic SAR), sized from the line thickness.
+// Markers grow in behind the reveal front.
 @vertex
 fn vs_dots(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
     let a = pts[ii];
-    if (!finite(a.y)) {
+    let g = grow(a.x);
+    if (!finite(a.y) || g <= 0.0) {
         return degenerate();
     }
-    let hx = px_to_ndc_x(u.params.z * 1.25);
-    let hy = px_to_ndc_y(u.params.z * 1.25);
+    let hx = px_to_ndc_x(u.params.z * 1.25 * g);
+    let hy = px_to_ndc_y(u.params.z * 1.25 * g);
     let cx = x_ndc(a.x);
     let cy = y_ndc(a.y);
     return rect(vi, cx - hx, cx + hx, cy - hy, cy + hy, u.color);

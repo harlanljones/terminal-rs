@@ -83,12 +83,20 @@ fn reveal_sweeps_in_from_the_left_and_fades() {
     let bars = sample::generate("AAPL", Timeframe::D1, 2_000, 1_790_000_000);
     let series = SeriesGpu::build(&bars);
     let closes: Vec<f64> = bars.iter().map(|b| b.close).collect();
-    let overlays = [Overlay {
-        line: line_ref(&indicators::sma(&closes, 20)),
-        color: [0.0, 0.6, 1.0, 1.0],
-        kind: LineKind::Line,
-        scale: 1.0,
-    }];
+    let overlays = [
+        Overlay {
+            line: line_ref(&indicators::sma(&closes, 20)),
+            color: [0.0, 0.6, 1.0, 1.0],
+            kind: LineKind::Line,
+            scale: 1.0,
+        },
+        Overlay {
+            line: line_ref(&indicators::ema(&closes, 50)),
+            color: [1.0, 0.3, 0.3, 1.0],
+            kind: LineKind::Dots,
+            scale: 1.0,
+        },
+    ];
     let v = Viewport::fit_last(bars.len(), 150, 800.0);
     let mut draw = |reveal: Reveal, pane: u64| {
         let out = price_pane(&PricePane {
@@ -122,7 +130,7 @@ fn reveal_sweeps_in_from_the_left_and_fades() {
     let (left, right) = (lit(&half, 0, 250), lit(&half, 450, 800));
     eprintln!("half revealed: left {left} right {right}");
     assert!(left > 2_000, "bars behind the front are drawn ({left})");
-    assert_eq!(right, 0, "nothing past the front, lines included");
+    assert_eq!(right, 0, "nothing past the front, lines and dots included");
 
     let full = draw(Reveal::DONE, 2);
     assert!(lit(&full, 450, 800) > 2_000);
