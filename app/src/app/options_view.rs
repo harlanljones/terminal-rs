@@ -246,9 +246,9 @@ pub fn options_chain(ui: &mut Ui, o: &mut OptionsPane) -> (Option<Action>, bool)
 
     let spot = ch.spot;
     let itm_wash = theme::amber().gamma_multiply(0.07);
-    // Rows cascade in when the chain comes into view or the expiration changes.
-    let expiry = o.expiration.unwrap_or(ch.expiration);
-    let cascade = anim::appear(ui.ctx(), egui::Id::new(("omon-rows", &o.symbol, expiry)), 0.9) * 0.9;
+    // Rows cascade in when the chain comes into view or a chain for another expiration
+    // arrives (not when one is requested: the old rows stay until then).
+    let cascade = anim::appear(ui.ctx(), ui.id().with(("omon-rows", &o.symbol, ch.expiration)), 0.9) * 0.9;
     egui::ScrollArea::vertical().id_salt(("omon", &o.symbol)).auto_shrink([false, false]).show_rows(
         ui,
         row_h,

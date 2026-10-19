@@ -45,8 +45,8 @@ const DOCK_SECS: f32 = 0.42;
 /// (staggered, for a layout switch). Window and divider resizes follow immediately.
 #[derive(Default)]
 pub(super) struct DockMotion {
-    /// Sorted pane ids per group last frame, to notice structural changes.
-    shape: Vec<Vec<PaneId>>,
+    /// The arrangement last frame, to notice structural changes.
+    shape: Vec<ShapePart>,
     /// Rectangles shown last frame, by group key.
     shown: HashMap<PaneId, Rect>,
     /// Where each surviving group started the current transition.
@@ -56,24 +56,41 @@ pub(super) struct DockMotion {
     start: Option<f64>,
 }
 
+/// The dock's arrangement without its proportions: split directions, child order and the
+/// panes in each group. A layout switch or a swap changes it; dragging a divider does not.
+#[derive(Debug, PartialEq)]
+enum ShapePart {
+    Split(Dir),
+    End,
+    Group(Vec<PaneId>),
+}
+
+fn shape_of(node: &Node, out: &mut Vec<ShapePart>) {
+    match node {
+        Node::Tabs { panes, .. } => {
+            let mut p = panes.clone();
+            p.sort_unstable();
+            out.push(ShapePart::Group(p));
+        }
+        Node::Split { dir, children, .. } => {
+            out.push(ShapePart::Split(*dir));
+            children.iter().for_each(|c| shape_of(c, out));
+            out.push(ShapePart::End);
+        }
+    }
+}
+
 impl DockMotion {
     /// A group keeps its key while it keeps its oldest pane.
     fn key(g: &crate::dock::Group) -> PaneId {
         g.panes.iter().copied().min().unwrap_or(0)
     }
 
-    /// Move `groups` to where they are shown this frame; returns how far each has
-    /// appeared (1 = fully).
-    fn apply(&mut self, ctx: &egui::Context, groups: &mut [crate::dock::Group]) -> Vec<f32> {
-        let mut shape: Vec<Vec<PaneId>> = groups
-            .iter()
-            .map(|g| {
-                let mut p = g.panes.clone();
-                p.sort_unstable();
-                p
-            })
-            .collect();
-        shape.sort_unstable();
+    /// Move `groups` (laid out from `dock`) to where they are shown this frame; returns
+    /// how far each has appeared (1 = fully).
+    fn apply(&mut self, ctx: &egui::Context, dock: &Node, groups: &mut [crate::dock::Group]) -> Vec<f32> {
+        let mut shape = Vec::new();
+        shape_of(dock, &mut shape);
         let now = ctx.input(|i| i.time);
         if shape != self.shape {
             // The first arrangement shows as is.
@@ -955,7 +972,7 @@ impl TerminalApp {
             self.empty_state(ui, area, &mut cmds);
         }
         let (mut groups, dividers) = self.dock.layout(area, gap);
-        let appear = self.dock_motion.apply(ui.ctx(), &mut groups);
+        let appear = self.dock_motion.apply(ui.ctx(), &self.dock, &mut groups);
         for (g, a) in groups.iter().zip(appear) {
             let opacity = ui.opacity();
             ui.multiply_opacity(a);
@@ -1577,7 +1594,7 @@ mod tests {
             let target: Vec<Rect> = gs.iter().map(|g| g.rect).collect();
             let mut appear = Vec::new();
             let input = egui::RawInput { time: Some(t), ..Default::default() };
-            ctx.run_ui(input, |ui| appear = motion.apply(ui.ctx(), &mut gs)).textures_delta.clear();
+            ctx.run_ui(input, |ui| appear = motion.apply(ui.ctx(), n, &mut gs)).textures_delta.clear();
             (gs.iter().map(|g| g.rect).collect::<Vec<_>>(), target, appear)
         };
         // The first arrangement and plain resizes show as laid out.
@@ -1599,5 +1616,21 @@ mod tests {
         assert!(appear[1] > 0.0 && appear[1] < 1.0);
         let (shown, target, appear) = step(&two, 2.0, 900.0);
         assert_eq!((shown, appear), (target, vec![1.0, 1.0]));
+
+        // Switching between layouts of the same groups glides, and so does a swap.
+        let rows = Node::preset(Layout::TwoRows, &[1, 2]);
+        let (shown, target, _) = step(&rows, 3.0, 900.0);
+        assert_ne!(shown, target, "starts from the columns");
+        let (shown, target, _) = step(&rows, 4.0, 900.0);
+        assert_eq!(shown, target);
+        let swapped = Node::split(Dir::Column, vec![Node::leaf(2), Node::leaf(1)]);
+        let (shown, target, _) = step(&swapped, 5.0, 900.0);
+        assert_ne!(shown, target, "starts from the old order");
+        step(&swapped, 6.0, 900.0);
+
+        // Dragging a divider follows immediately.
+        let dragged = Node::split_with(Dir::Column, vec![Node::leaf(2), Node::leaf(1)], vec![0.3, 0.7]);
+        let (shown, target, _) = step(&dragged, 6.1, 900.0);
+        assert_eq!(shown, target);
     }
 }

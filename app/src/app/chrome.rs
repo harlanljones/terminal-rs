@@ -878,9 +878,11 @@ impl TerminalApp {
         for (k, (msg, at)) in self.toasts.iter().enumerate() {
             let age = at.elapsed().as_secs_f32();
             let enter = anim::ease_out_back(anim::since(ctx, age as f64, 0.55));
-            let leave = anim::span(age, life - 0.35, life);
+            // Reduce Motion skips the fade: the toast stays until it is removed.
+            let fade = if anim::reduced() { 0.0 } else { 0.35 };
+            let leave = if fade > 0.0 { anim::span(age, life - fade, life) } else { 0.0 };
             // Wake for the fade-out (and the removal at the end of it).
-            ctx.request_repaint_after(Duration::from_secs_f32((life - 0.35 - age).max(0.0)));
+            ctx.request_repaint_after(Duration::from_secs_f32((life - fade - age).max(0.0)));
             let y =
                 anim::spring(ctx, Id::new(("toast-y", *at)), screen.top() + self.toolbar_h() + 10.0 + k as f32 * 58.0);
             let x = screen.right() - 432.0 + (1.0 - enter) * 444.0;
