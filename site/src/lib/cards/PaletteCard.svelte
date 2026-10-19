@@ -1,5 +1,4 @@
 <script lang="ts">
-	import { asset } from '$app/paths';
 	import { suggestions } from '#lib/demo/script.js';
 	import { envelope, span } from '#lib/ease.js';
 	import { loop } from '#lib/motion.svelte.js';
@@ -31,8 +30,8 @@
 
 <div class="card-visual" {@attach clock.observe}>
 	<Fit width={506} height={304}>
-		<img class="backdrop" src={asset('demo-dark.webp')} alt="" />
-		<div class="palette" style:opacity={shown} style:transform="translateY({(1 - shown) * 8}px) scale({1 - opened * 0.02})">
+		<div class="backdrop"></div>
+		<div class="palette app" style:opacity={shown} style:transform="translateY({(1 - shown) * 8}px) scale({1 - opened * 0.02})">
 			<div class="input">
 				<svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.6" /><path d="M10.4 10.4 14 14" /></svg>
 				<span class="text">
@@ -63,11 +62,13 @@
 	.backdrop {
 		position: absolute;
 		inset: -12px;
-		width: calc(100% + 24px);
-		height: calc(100% + 24px);
-		object-fit: cover;
-		object-position: 20% 8%;
+		background: 20% 8% / cover url('/demo-dark.webp');
 		filter: blur(3px) brightness(0.42) saturate(1.2);
+	}
+
+	:global(:root[data-theme='light']) .backdrop {
+		background-image: url('/demo-light.webp');
+		filter: blur(3px) brightness(0.96) saturate(1.1);
 	}
 
 	.palette {
@@ -86,13 +87,21 @@
 		transform-origin: 50% 30%;
 	}
 
+	:global(:root[data-theme='light']) .palette {
+		background: rgba(255, 255, 255, 0.72);
+		box-shadow:
+			inset 0 0.5px 0 #fff,
+			inset 0 0 0 0.5px rgba(0, 0, 0, 0.08),
+			0 24px 60px -12px rgba(0, 0, 0, 0.28);
+	}
+
 	.input {
 		display: flex;
 		align-items: center;
 		gap: 10px;
 		height: 44px;
 		padding: 0 10px 4px;
-		color: #f4f4f5;
+		color: var(--text);
 		font: 500 18px var(--sans);
 	}
 
@@ -100,13 +109,13 @@
 		width: 16px;
 		height: 16px;
 		fill: none;
-		stroke: #8e8e93;
+		stroke: var(--muted);
 		stroke-width: 1.5;
 		stroke-linecap: round;
 	}
 
 	.placeholder {
-		color: #6e6e73;
+		color: color-mix(in srgb, var(--muted) 80%, transparent);
 	}
 
 	.text {
@@ -118,7 +127,7 @@
 		width: 1.5px;
 		height: 20px;
 		margin: 0 1px;
-		background: #f4f4f5;
+		background: var(--text);
 	}
 
 	.row {
@@ -128,29 +137,29 @@
 		height: 42px;
 		padding: 0 16px;
 		border-radius: 10px;
-		color: #d1d1d6;
+		color: var(--dim);
 		font: 14px var(--sans);
 		transition: background-color 0.18s;
 	}
 
 	.row.selected {
-		background: rgba(255, 255, 255, 0.1);
+		background: var(--control);
 		box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.18);
-		color: #f4f4f5;
+		color: var(--text);
 	}
 
 	.row.pressed {
-		background: rgba(255, 255, 255, 0.2);
+		background: color-mix(in srgb, var(--text) 18%, transparent);
 	}
 
 	.code {
 		width: 38px;
-		color: #8e8e93;
+		color: var(--muted);
 		font: 600 11px var(--mono);
 	}
 
 	.selected .code {
-		color: #f4f4f5;
+		color: var(--text);
 	}
 
 	.title {
@@ -158,12 +167,12 @@
 	}
 
 	.kind {
-		color: #8e8e93;
+		color: var(--muted);
 		font-size: 12px;
 	}
 
 	.enter {
-		color: #8e8e93;
+		color: var(--muted);
 		font-size: 13px;
 	}
 </style>

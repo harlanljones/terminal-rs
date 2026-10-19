@@ -2,12 +2,10 @@
 	import type { Attachment } from 'svelte/attachments';
 	import { span } from '#lib/ease.js';
 	import Scene from './Scene.svelte';
-	import { Player } from './player.svelte.js';
+	import type { Player } from './player.svelte.js';
 	import { CHAPTERS, DURATION, STAGE } from './script.js';
-	import { play } from './sound.js';
 
-	const player = new Player();
-	let theme = $state<'dark' | 'light'>('dark');
+	let { player }: { player: Player } = $props();
 	let scale = $state(1);
 
 	const fit: Attachment<HTMLElement> = (node) => {
@@ -16,31 +14,10 @@
 		return () => observer.disconnect();
 	};
 
-	function choose(next: 'dark' | 'light') {
-		if (next === theme) return;
-		theme = next;
-		if (player.sound) play('switch');
-	}
-
 	const chapters = CHAPTERS.map((c, i) => ({ ...c, end: CHAPTERS[i + 1]?.t ?? DURATION }));
 </script>
 
 <div class="showcase">
-	<div class="switch glass" role="radiogroup" aria-label="App theme in the demo">
-		<span class="thumb" style:transform="translateX({theme === 'dark' ? 0 : 100}%)"></span>
-		<button type="button" role="radio" aria-checked={theme === 'dark'} onclick={() => choose('dark')}>
-			<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.5 9.8A5.8 5.8 0 0 1 6.2 2.5a5.8 5.8 0 1 0 7.3 7.3z" /></svg>
-			Dark
-		</button>
-		<button type="button" role="radio" aria-checked={theme === 'light'} onclick={() => choose('light')}>
-			<svg viewBox="0 0 16 16" aria-hidden="true">
-				<circle cx="8" cy="8" r="3" />
-				<path d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1" />
-			</svg>
-			Light
-		</button>
-	</div>
-
 	<div
 		class="frame"
 		role="img"
@@ -49,7 +26,7 @@
 		{@attach player.observe}
 	>
 		<div class="stage" style:transform="scale({scale})">
-			<Scene t={player.time} {theme} />
+			<Scene t={player.time} />
 		</div>
 		{#if !player.sound}
 			<button type="button" class="listen glass" onclick={() => player.playWithSound()}>
@@ -122,60 +99,6 @@
 			0 10px 28px -8px rgba(0, 0, 0, 0.5);
 	}
 
-	.switch {
-		position: relative;
-		display: flex;
-		padding: 4px;
-		border-radius: 999px;
-	}
-
-	.switch .thumb {
-		position: absolute;
-		top: 4px;
-		left: 4px;
-		width: 118px;
-		height: 38px;
-		border-radius: 999px;
-		background: linear-gradient(168deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.08) 46%, rgba(255, 255, 255, 0.14));
-		box-shadow:
-			inset 0 0.5px 0 rgba(255, 255, 255, 0.62),
-			inset 0 -0.5px 0 rgba(255, 255, 255, 0.2),
-			inset 0 0 0 0.5px rgba(255, 255, 255, 0.2),
-			inset 0 -8px 14px -10px rgba(255, 255, 255, 0.22),
-			0 4px 14px rgba(0, 0, 0, 0.38);
-		transition: transform 0.45s cubic-bezier(0.3, 1.3, 0.5, 1);
-	}
-
-	.switch button {
-		position: relative;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		gap: 8px;
-		width: 118px;
-		height: 38px;
-		border: 0;
-		background: none;
-		color: var(--muted);
-		font: 500 14px var(--sans);
-		cursor: pointer;
-		transition: color 0.2s;
-	}
-
-	.switch button[aria-checked='true'] {
-		color: var(--fg);
-	}
-
-	.switch svg {
-		width: 15px;
-		height: 15px;
-		fill: none;
-		stroke: currentColor;
-		stroke-width: 1.4;
-		stroke-linecap: round;
-		stroke-linejoin: round;
-	}
-
 	.frame {
 		position: relative;
 		width: 100%;
@@ -187,6 +110,12 @@
 		box-shadow:
 			0 0 0 1px rgba(255, 255, 255, 0.09),
 			0 40px 120px -20px rgba(0, 0, 0, 0.8);
+	}
+
+	:global(:root[data-theme='light']) .frame {
+		box-shadow:
+			0 0 0 1px rgba(0, 0, 0, 0.08),
+			0 40px 100px -24px rgba(0, 0, 0, 0.35);
 	}
 
 	.stage {
@@ -241,7 +170,7 @@
 		height: 30px;
 		border: 0;
 		border-radius: 999px;
-		background: rgba(255, 255, 255, 0.07);
+		background: color-mix(in srgb, var(--fg) 7%, transparent);
 		color: var(--fg);
 		font: 500 13px var(--sans);
 		cursor: pointer;
@@ -263,7 +192,7 @@
 
 	.icon:hover,
 	.sound:hover {
-		background: rgba(255, 255, 255, 0.12);
+		background: color-mix(in srgb, var(--fg) 12%, transparent);
 	}
 
 	.controls svg {
@@ -318,13 +247,13 @@
 		height: 4px;
 		overflow: hidden;
 		border-radius: 2px;
-		background: rgba(255, 255, 255, 0.12);
+		background: color-mix(in srgb, var(--fg) 12%, transparent);
 	}
 
 	.chapters .fill {
 		display: block;
 		height: 100%;
-		background: #f5f5f7;
+		background: var(--fg);
 		transform-origin: 0 50%;
 	}
 
@@ -362,12 +291,6 @@
 
 		.chapters button {
 			padding-top: 13px;
-		}
-	}
-
-	@media (prefers-reduced-motion: reduce) {
-		.switch .thumb {
-			transition: none;
 		}
 	}
 </style>

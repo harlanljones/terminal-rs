@@ -34,7 +34,7 @@
 
 <div class="card-visual" {@attach clock.observe}>
 	<Fit width={506} height={304}>
-		<div class="pane">
+		<div class="pane app">
 			<div class="tabs">
 				<span class="code">CONG</span>
 				<span class="title">Congress</span>
@@ -87,11 +87,11 @@
 		height: 300px;
 		overflow: hidden;
 		border-radius: 10px 0 0 0;
-		background: #0c0c0d;
+		background: var(--panel);
 		box-shadow:
-			0 0 0 1px rgba(255, 255, 255, 0.08),
-			0 20px 40px -12px rgba(0, 0, 0, 0.6);
-		color: #d6d6da;
+			0 0 0 1px var(--line),
+			0 20px 40px -12px var(--drop);
+		color: var(--dim);
 		font: 9.5px/1 var(--mono);
 		font-variant-numeric: tabular-nums;
 	}
@@ -102,12 +102,12 @@
 		gap: 6px;
 		height: 24px;
 		padding: 0 10px;
-		background: #1c1c1e;
+		background: var(--header);
 	}
 
 	.code,
 	.ticker {
-		color: #ffb000;
+		color: var(--hl);
 	}
 
 	.tabs .code {
@@ -116,12 +116,12 @@
 	}
 
 	.title {
-		color: #ececee;
+		color: var(--text);
 		font: 11px var(--sans);
 	}
 
 	.close {
-		color: #8e8e93;
+		color: var(--muted);
 		font-size: 11px;
 	}
 
@@ -131,7 +131,7 @@
 		gap: 4px;
 		height: 24px;
 		padding: 0 8px;
-		color: #ececee;
+		color: var(--text);
 		font-size: 9px;
 		white-space: nowrap;
 	}
@@ -142,7 +142,7 @@
 	}
 
 	.filters .on {
-		background: #0a84ff;
+		background: var(--accent);
 		color: #fff;
 	}
 
@@ -150,14 +150,14 @@
 		display: flex;
 		align-items: center;
 		gap: 5px;
-		color: #8e8e93;
+		color: var(--muted);
 	}
 
 	.dot {
 		width: 5px;
 		height: 5px;
 		border-radius: 50%;
-		background: #30d158;
+		background: var(--up);
 	}
 
 	.row {
@@ -171,8 +171,8 @@
 	}
 
 	.head {
-		background: #1c1c1e;
-		color: #ffb000;
+		background: var(--header);
+		color: var(--hl);
 		font-size: 9px;
 	}
 
@@ -185,12 +185,12 @@
 	}
 
 	.row.selected {
-		background: rgba(255, 255, 255, 0.1);
-		box-shadow: inset 2px 0 #0a84ff;
+		background: var(--control);
+		box-shadow: inset 2px 0 var(--accent);
 	}
 
 	.muted {
-		color: #8e8e93;
+		color: var(--muted);
 	}
 
 	.dem {
@@ -201,11 +201,19 @@
 		color: #ff6961;
 	}
 
+	:global(:root[data-theme='light']) .dem {
+		color: #0060df;
+	}
+
+	:global(:root[data-theme='light']) .rep {
+		color: #c4291c;
+	}
+
 	.buy {
-		color: #30d158;
+		color: var(--up);
 	}
 
 	.sell {
-		color: #ff453a;
+		color: var(--down);
 	}
 </style>

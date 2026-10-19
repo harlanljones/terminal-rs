@@ -86,7 +86,7 @@
 		overflow: hidden;
 		border-radius: 8px;
 		background: var(--bg);
-		box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+		box-shadow: 0 0 0 1px var(--line);
 		color: var(--text);
 		font-family: var(--mono);
 		transition:
@@ -96,8 +96,8 @@
 
 	.tile.active {
 		box-shadow:
-			0 0 0 1.5px rgba(255, 255, 255, 0.9),
-			0 0 0 5px rgba(255, 255, 255, 0.1),
+			0 0 0 1.5px color-mix(in srgb, var(--fg) 90%, transparent),
+			0 0 0 5px color-mix(in srgb, var(--fg) 10%, transparent),
 			0 14px 30px -6px rgba(0, 0, 0, 0.6);
 		transform: translateY(-3px) scale(1.04);
 	}

@@ -5,6 +5,14 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<meta name="text-scale" content="scale" />
 		<meta name="theme-color" content="#0a0a0b" />
+		<script>
+			try {
+				if (localStorage.getItem('theme') === 'light') {
+					document.documentElement.dataset.theme = 'light';
+					document.querySelector('meta[name="theme-color"]').content = '#f5f5f7';
+				}
+			} catch {}
+		</script>
 		%sveltekit.head%
 	</head>
 	<body>

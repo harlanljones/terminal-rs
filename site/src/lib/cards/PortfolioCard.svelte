@@ -43,12 +43,12 @@
 	const money = (v: number) => v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 	const signed = (v: number, text: string) => `${v >= 0 ? '+' : '−'}${text}`;
 	const tint = (f: { up: boolean; a: number }) =>
-		f.a > 0 ? `color-mix(in srgb, ${f.up ? '#30d158' : '#ff453a'} ${Math.round(f.a * 30)}%, transparent)` : null;
+		f.a > 0 ? `color-mix(in srgb, ${f.up ? 'var(--up)' : 'var(--down)'} ${Math.round(f.a * 30)}%, transparent)` : null;
 </script>
 
 <div class="card-visual" {@attach clock.observe}>
 	<Fit width={506} height={304}>
-		<div class="pane">
+		<div class="pane app">
 			<div class="tabs">
 				<span class="code">PORT</span>
 				<span class="title">Portfolio</span>
@@ -101,11 +101,11 @@
 		height: 300px;
 		overflow: hidden;
 		border-radius: 10px 10px 0 0;
-		background: #0c0c0d;
+		background: var(--panel);
 		box-shadow:
-			0 0 0 1px rgba(255, 255, 255, 0.08),
-			0 20px 40px -12px rgba(0, 0, 0, 0.6);
-		color: #f4f4f5;
+			0 0 0 1px var(--line),
+			0 20px 40px -12px var(--drop);
+		color: var(--text);
 		font-family: var(--sans);
 		font-variant-numeric: tabular-nums;
 	}
@@ -116,11 +116,11 @@
 		gap: 7px;
 		height: 28px;
 		padding: 0 14px;
-		background: #1c1c1e;
+		background: var(--header);
 	}
 
 	.code {
-		color: #ffb000;
+		color: var(--hl);
 		font: 700 9px var(--mono);
 	}
 
@@ -130,7 +130,7 @@
 	}
 
 	.account {
-		color: #8e8e93;
+		color: var(--muted);
 		font-size: 11px;
 	}
 
@@ -142,7 +142,7 @@
 	}
 
 	.label {
-		color: #8e8e93;
+		color: var(--muted);
 		font-size: 12px;
 	}
 
@@ -163,9 +163,9 @@
 		gap: 2px;
 		padding: 3px;
 		border-radius: 999px;
-		background: rgba(255, 255, 255, 0.06);
-		box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.12);
-		color: #8e8e93;
+		background: var(--control);
+		box-shadow: inset 0 0 0 0.5px var(--line);
+		color: var(--muted);
 		font-size: 12.5px;
 	}
 
@@ -179,7 +179,14 @@
 		box-shadow:
 			inset 0 0.5px 0 rgba(255, 255, 255, 0.5),
 			inset 0 0 0 0.5px rgba(255, 255, 255, 0.16);
-		color: #f4f4f5;
+		color: var(--text);
+	}
+
+	:global(:root[data-theme='light']) .segments .on {
+		background: #fff;
+		box-shadow:
+			0 0 0 0.5px rgba(0, 0, 0, 0.06),
+			0 1px 3px rgba(0, 0, 0, 0.14);
 	}
 
 	.row {
@@ -188,13 +195,13 @@
 		align-items: center;
 		height: 30px;
 		margin: 0 16px;
-		border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+		border-bottom: 1px solid var(--line);
 		font: 11.5px var(--mono);
 	}
 
 	.head {
 		height: 26px;
-		color: #8e8e93;
+		color: var(--muted);
 		font-size: 9.5px;
 	}
 
@@ -210,23 +217,23 @@
 	}
 
 	.symbol {
-		color: #ffb000;
+		color: var(--hl);
 	}
 
 	.cash {
 		border-bottom: 0;
-		color: #8e8e93;
+		color: var(--muted);
 	}
 
 	.cash .num {
-		color: #f4f4f5;
+		color: var(--text);
 	}
 
 	.up {
-		color: #30d158;
+		color: var(--up);
 	}
 
 	.down {
-		color: #ff453a;
+		color: var(--down);
 	}
 </style>

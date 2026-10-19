@@ -21,7 +21,7 @@
 
 <div class="card-visual" {@attach clock.observe}>
 	<Fit width={506} height={395}>
-		<div class="pane" style:opacity={shown}>
+		<div class="pane app" style:opacity={shown}>
 			<div class="tabs">
 				<span class="code">GP</span>
 				<span class="title">AAPL</span>
@@ -50,14 +50,6 @@
 	}
 
 	.pane {
-		--panel: #0c0c0d;
-		--text: #ececee;
-		--muted: #8e8e93;
-		--grid: #1d1d20;
-		--up: #30d158;
-		--down: #ff453a;
-		--sma1: #0a84ff;
-		--sma2: #ff375f;
 		position: absolute;
 		left: 16px;
 		top: 44px;
@@ -69,8 +61,8 @@
 		border-radius: 10px;
 		background: var(--panel);
 		box-shadow:
-			0 0 0 1px rgba(255, 255, 255, 0.08),
-			0 20px 40px -12px rgba(0, 0, 0, 0.6);
+			0 0 0 1px var(--line),
+			0 20px 40px -12px var(--drop);
 		font-family: var(--mono);
 		color: var(--text);
 	}
@@ -81,12 +73,12 @@
 		gap: 6px;
 		height: 28px;
 		padding: 0 10px;
-		background: #1c1c1e;
+		background: var(--header);
 		font-size: 10px;
 	}
 
 	.code {
-		color: #ffb000;
+		color: var(--hl);
 		font-weight: 700;
 	}
 
@@ -105,7 +97,7 @@
 	}
 
 	.interval.on {
-		background: rgba(255, 255, 255, 0.1);
+		background: var(--control);
 		color: var(--text);
 	}
 

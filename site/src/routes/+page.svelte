@@ -8,7 +8,10 @@
 	import PortfolioCard from '#lib/cards/PortfolioCard.svelte';
 	import ThemesCard from '#lib/cards/ThemesCard.svelte';
 	import Showcase from '#lib/demo/Showcase.svelte';
+	import { Player } from '#lib/demo/player.svelte.js';
+	import { play } from '#lib/demo/sound.js';
 	import { reveal } from '#lib/motion.svelte.js';
+	import { theme } from '#lib/theme.svelte.js';
 	import {
 		ARCH,
 		DESCRIPTION,
@@ -38,6 +41,13 @@
 	}).replaceAll('<', '\\u003c');
 	// A literal closing tag here would end this <script> block.
 	const jsonLd = `<script type="application/ld+json">${app}<\/script>`;
+
+	const player = new Player();
+
+	function toggleTheme() {
+		theme.toggle();
+		if (player.sound) play('switch');
+	}
 
 	const markets = [
 		{
@@ -165,6 +175,23 @@
 			<a class="link" href="#commands">Commands</a>
 			<a class="link" href="#install">Install</a>
 			<a class="link" href={REPO_URL}>GitHub</a>
+			<button
+				type="button"
+				class="theme"
+				aria-label="Light mode"
+				aria-pressed={theme.current === 'light'}
+				onclick={toggleTheme}
+			>
+				<svg class="moon" viewBox="0 0 16 16" aria-hidden="true">
+					<path d="M13.5 9.8A5.8 5.8 0 0 1 6.2 2.5a5.8 5.8 0 1 0 7.3 7.3z" />
+				</svg>
+				<svg class="sun" viewBox="0 0 16 16" aria-hidden="true">
+					<circle cx="8" cy="8" r="3" />
+					<path
+						d="M8 1.5v1.6M8 12.9v1.6M1.5 8h1.6M12.9 8h1.6M3.4 3.4l1.1 1.1M11.5 11.5l1.1 1.1M3.4 12.6l1.1-1.1M11.5 4.5l1.1-1.1"
+					/>
+				</svg>
+			</button>
 			<a class="pill" href={resolve('/download')}>Download</a>
 		</div>
 	</div>
@@ -188,7 +215,7 @@
 	</header>
 
 	<section class="showcase" aria-label="Demo">
-		<Showcase />
+		<Showcase {player} />
 	</section>
 
 	<div id="features">
@@ -269,12 +296,9 @@
 
 <style>
 	.glass {
-		background: rgba(24, 24, 28, 0.46);
+		background: var(--glass);
 		backdrop-filter: blur(20px) saturate(180%) brightness(106%);
-		box-shadow:
-			inset 0 0.5px 0 rgba(255, 255, 255, 0.28),
-			inset 0 0 0 0.5px rgba(255, 255, 255, 0.14),
-			0 10px 28px -8px rgba(0, 0, 0, 0.5);
+		box-shadow: var(--glass-edge);
 	}
 
 	.nav {
@@ -329,22 +353,68 @@
 		fill: currentColor;
 	}
 
+	.theme {
+		display: grid;
+		place-items: center;
+		width: 32px;
+		height: 32px;
+		margin-inline: -6px;
+		padding: 0;
+		border: 0;
+		border-radius: 999px;
+		background: none;
+		color: var(--muted);
+		cursor: pointer;
+		transition:
+			color 0.15s,
+			background-color 0.15s;
+	}
+
+	.theme:hover {
+		background: color-mix(in srgb, var(--fg) 8%, transparent);
+		color: var(--fg);
+	}
+
+	.theme svg {
+		grid-area: 1 / 1;
+		width: 16px;
+		height: 16px;
+		fill: none;
+		stroke: currentColor;
+		stroke-width: 1.4;
+		stroke-linecap: round;
+		stroke-linejoin: round;
+		transition:
+			opacity 0.25s,
+			rotate 0.5s cubic-bezier(0.3, 1.4, 0.5, 1),
+			scale 0.5s cubic-bezier(0.3, 1.4, 0.5, 1);
+	}
+
+	.sun,
+	:global(:root[data-theme='light']) .moon {
+		opacity: 0;
+		rotate: -90deg;
+		scale: 0.5;
+	}
+
+	:global(:root[data-theme='light']) .sun {
+		opacity: 1;
+		rotate: 0deg;
+		scale: 1;
+	}
+
 	.pill {
 		padding: 7px 14px;
 		border-radius: 999px;
-		background: linear-gradient(168deg, rgba(255, 255, 255, 0.24), rgba(255, 255, 255, 0.08) 46%, rgba(255, 255, 255, 0.14));
-		box-shadow:
-			inset 0 0.5px 0 rgba(255, 255, 255, 0.62),
-			inset 0 -0.5px 0 rgba(255, 255, 255, 0.2),
-			inset 0 0 0 0.5px rgba(255, 255, 255, 0.2),
-			0 4px 14px rgba(0, 0, 0, 0.38);
+		background: var(--raised);
+		box-shadow: var(--raised-edge);
 		font: 500 14px var(--sans);
 		text-decoration: none;
 		transition: background-color 0.15s;
 	}
 
 	.pill:hover {
-		background-color: rgba(255, 255, 255, 0.08);
+		background-color: color-mix(in srgb, var(--fg) 8%, transparent);
 	}
 
 	.hero {
@@ -378,6 +448,10 @@
 		animation-name: pop;
 	}
 
+	:global(:root[data-theme='light']) .logo {
+		filter: drop-shadow(0 18px 32px rgba(0, 0, 0, 0.2)) drop-shadow(0 0 40px rgba(110, 155, 255, 0.12));
+	}
+
 	h1 {
 		margin: 32px 0 0;
 		font: 700 58px/1.05 var(--display);
@@ -408,9 +482,9 @@
 		gap: 9px;
 		padding: 13px 22px 13px 20px;
 		border-radius: 999px;
-		background: #f5f5f7;
+		background: var(--solid);
 		box-shadow: 0 10px 30px rgba(255, 255, 255, 0.07);
-		color: #000;
+		color: var(--on-solid);
 		font: 600 15px/18px var(--sans);
 		text-decoration: none;
 		transition:
@@ -418,8 +492,12 @@
 			background-color 0.2s;
 	}
 
+	:global(:root[data-theme='light']) .download {
+		box-shadow: 0 10px 30px rgba(0, 0, 0, 0.14);
+	}
+
 	.download:hover {
-		background: #fff;
+		background: var(--solid-hover);
 		scale: 1.03;
 	}
 
@@ -467,9 +545,7 @@
 		overflow: hidden;
 		border-radius: 16px;
 		background: var(--card);
-		box-shadow:
-			inset 0 1px 0 rgba(255, 255, 255, 0.06),
-			0 0 0 1px rgba(255, 255, 255, 0.09);
+		box-shadow: var(--card-edge);
 	}
 
 	.caption {
@@ -559,6 +635,22 @@
 		font-weight: 700;
 	}
 
+	:global(:root[data-theme='light']) kbd {
+		background: linear-gradient(#fff, #f2f2f4);
+		box-shadow:
+			inset 0 0 0 0.5px rgba(0, 0, 0, 0.12),
+			0 1px 0 rgba(0, 0, 0, 0.16);
+		color: #3a3a3c;
+	}
+
+	:global(:root[data-theme='light']) kbd.go {
+		background: linear-gradient(#48484a, #2c2c2e 55%, #1c1c1e);
+		box-shadow:
+			inset 0 1px 0 rgba(255, 255, 255, 0.18),
+			0 1px 0 rgba(0, 0, 0, 0.3);
+		color: #fff;
+	}
+
 	.label {
 		color: var(--muted);
 		font-size: 14px;
@@ -570,6 +662,10 @@
 		border-radius: 14px;
 		background: #111113;
 		box-shadow: 0 0 0 1px var(--line);
+	}
+
+	:global(:root[data-theme='light']) .source {
+		background: #fff;
 	}
 
 	.source-head {
@@ -588,11 +684,8 @@
 		padding: 0 10px;
 		border: 0;
 		border-radius: 7px;
-		background: linear-gradient(168deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.06) 46%, rgba(255, 255, 255, 0.1));
-		box-shadow:
-			inset 0 0.5px 0 rgba(255, 255, 255, 0.45),
-			inset 0 0 0 0.5px rgba(255, 255, 255, 0.16),
-			0 4px 12px rgba(0, 0, 0, 0.35);
+		background: var(--raised);
+		box-shadow: var(--raised-edge);
 		color: var(--fg);
 		font: 500 12px/14px var(--sans);
 		cursor: pointer;
@@ -600,7 +693,7 @@
 	}
 
 	.copy:hover {
-		background-color: rgba(255, 255, 255, 0.06);
+		background-color: color-mix(in srgb, var(--fg) 8%, transparent);
 	}
 
 	.lines {
@@ -611,7 +704,7 @@
 	}
 
 	code {
-		color: #d1d1d6;
+		color: color-mix(in srgb, var(--fg) 85%, var(--bg));
 		font: 13px/23px var(--mono);
 		white-space: pre;
 	}

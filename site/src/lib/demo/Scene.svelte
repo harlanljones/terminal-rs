@@ -1,12 +1,11 @@
 <script lang="ts">
-	import { asset } from '$app/paths';
 	import Chart from '#lib/Chart.svelte';
 	import Logo from '#lib/Logo.svelte';
 	import { daily, intraday } from '#lib/chart.js';
 	import { clamp, easeInOut, easeOut, easeOutBack, envelope, lerp, span } from '#lib/ease.js';
 	import { CAPTIONS, CHART_PANE, SIDE_PANE, T, WINDOW, suggestions } from './script.js';
 
-	let { t, theme }: { t: number; theme: 'dark' | 'light' } = $props();
+	let { t }: { t: number } = $props();
 
 	// Camera: zooms the window onto the chart pane and back out.
 	const FOCUS = { x: WINDOW.x + CHART_PANE.x + CHART_PANE.w / 2, y: WINDOW.y + CHART_PANE.y + CHART_PANE.h / 2 };
@@ -91,20 +90,11 @@
 	let captionShown = $derived(caption ? envelope(t, caption.start - 200, caption.start, caption.end + 600, caption.end + 900) : 0);
 </script>
 
-<div class="scene {theme}">
+<div class="scene">
 	<div class="wallpaper"></div>
 
 	<div class="camera" style:transform={camera}>
 		<div class="window">
-			<img
-				src={asset(`demo-${theme}.webp`)}
-				width="1040"
-				height="624"
-				alt=""
-				decoding="async"
-				fetchpriority={theme === 'dark' ? 'high' : 'auto'}
-			/>
-
 			<div
 				class={['pane chart-pane', { focused: t < T.options[0] }]}
 				style:left="{CHART_PANE.x}px"
@@ -273,7 +263,7 @@
 		user-select: none;
 	}
 
-	.scene.light {
+	:global(:root[data-theme='light']) .scene {
 		--panel: #ffffff;
 		--header: #ececee;
 		--text: #1d1d1f;
@@ -318,15 +308,15 @@
 		height: 624px;
 		overflow: hidden;
 		border-radius: 12px;
+		background: center / cover url('/demo-dark.webp');
 		box-shadow:
 			0 0 0 0.5px rgba(255, 255, 255, 0.18),
 			0 30px 80px -10px rgba(0, 0, 0, 0.7);
 	}
 
-	.window img {
-		display: block;
-		width: 100%;
-		height: 100%;
+	/* Not an <img>: only the current theme's capture loads, and it is right before hydration. */
+	:global(:root[data-theme='light']) .window {
+		background-image: url('/demo-light.webp');
 	}
 
 	.pane {

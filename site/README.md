@@ -29,7 +29,9 @@ npm run check
   on a loop while it is on screen; "Play with sound" restarts it once with sound.
 - `src/lib/cards/` holds the feature card animations. Each one loops only while it is on screen.
 - With reduced motion, the demo and cards hold one still frame and nothing fades in on scroll.
-- The site is dark only. The Dark/Light switch changes the app theme inside the demo.
+- The theme button in the nav switches the page, the demo and the cards between dark and light,
+  and remembers the choice. Dark is the default. The page colors are in `src/app.css`, including
+  the app's own Terminal Dark and Terminal Light colors under `.app`.
 - `src/lib/site.ts` holds the version, architecture, minimum macOS, site URL and download URL,
   plus the name, title and description used by the page's metadata. Update it with each release.
   `static/robots.txt` and `static/sitemap.xml` repeat the site URL.

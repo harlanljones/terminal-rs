@@ -81,7 +81,7 @@
 
 <div class="card-visual" {@attach clock.observe}>
 	<Fit width={506} height={395}>
-		<div class="pane">
+		<div class="pane app">
 			<div class="tabs">
 				<span class="code">WEI</span>
 				<span class="title">World Markets</span>
@@ -130,8 +130,6 @@
 	}
 
 	.pane {
-		--up: #30d158;
-		--down: #ff453a;
 		position: absolute;
 		left: 16px;
 		top: 44px;
@@ -139,11 +137,11 @@
 		height: 330px;
 		overflow: hidden;
 		border-radius: 10px;
-		background: #0c0c0d;
+		background: var(--panel);
 		box-shadow:
-			0 0 0 1px rgba(255, 255, 255, 0.08),
-			0 20px 40px -12px rgba(0, 0, 0, 0.6);
-		color: #d6d6da;
+			0 0 0 1px var(--line),
+			0 20px 40px -12px var(--drop);
+		color: var(--dim);
 		font: 8.5px/1 var(--mono);
 		font-variant-numeric: tabular-nums;
 	}
@@ -154,21 +152,21 @@
 		gap: 6px;
 		height: 24px;
 		padding: 0 10px;
-		background: #1c1c1e;
+		background: var(--header);
 	}
 
 	.title {
-		color: #ececee;
+		color: var(--text);
 		font: 11px var(--sans);
 	}
 
 	.close {
-		color: #8e8e93;
+		color: var(--muted);
 		font-size: 11px;
 	}
 
 	.code {
-		color: #ffb000;
+		color: var(--hl);
 	}
 
 	.tabs .code {
@@ -177,7 +175,7 @@
 
 	.status {
 		padding: 6px 10px 5px;
-		color: #8e8e93;
+		color: var(--muted);
 	}
 
 	.group,
@@ -192,13 +190,13 @@
 	.group {
 		height: 15px;
 		margin-top: 3px;
-		background: #1c1c1e;
-		color: #ececee;
+		background: var(--header);
+		color: var(--text);
 		font-size: 8px;
 	}
 
 	.group .num {
-		color: #8e8e93;
+		color: var(--muted);
 	}
 
 	.group span:first-child {
@@ -211,7 +209,7 @@
 
 	.name {
 		overflow: hidden;
-		color: #c7c7cc;
+		color: var(--dim);
 		white-space: nowrap;
 		text-overflow: ellipsis;
 	}
@@ -224,7 +222,7 @@
 		margin: 0 -3px;
 		padding: 2px 3px;
 		border-radius: 2px;
-		color: #ececee;
+		color: var(--text);
 	}
 
 	svg {
