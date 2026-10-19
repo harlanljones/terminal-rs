@@ -98,8 +98,7 @@ impl PivotKind {
 }
 
 /// Pivot levels for each bar from the previous session's prices (`session_of` maps a
-/// timestamp to its session). Each level is blank on the last bar of a session so the
-/// lines break between sessions instead of joining with a vertical step.
+/// timestamp to its session); the first session has none.
 pub fn pivots(o: &Ohlcv, session_of: impl Fn(i64) -> i64, kind: PivotKind) -> Vec<(&'static str, Vec<f64>)> {
     let names = kind.names();
     let len = o.len();
@@ -120,8 +119,7 @@ pub fn pivots(o: &Ohlcv, session_of: impl Fn(i64) -> i64, kind: PivotKind) -> Ve
                 cur = Some(bar);
             }
         }
-        let ends = i + 1 < len && keys[i + 1] != keys[i];
-        if let Some(l) = levels.as_ref().filter(|_| !ends) {
+        if let Some(l) = &levels {
             for (series, v) in out.iter_mut().zip(l) {
                 series[i] = *v;
             }
@@ -165,8 +163,8 @@ mod tests {
         let (pp, r1, s1) = (&p[0].1, &p[1].1, &p[2].1);
         assert!(pp[0].is_nan() && pp[1].is_nan());
         assert_eq!((pp[2], r1[2], s1[2]), (12.0, 16.0, 9.0));
-        // The last bar of day 2 is blank to break the line; day 3 uses H 14.5, L 12, C 14.
-        assert!(pp[3].is_nan());
+        // Every bar of day 2 carries its levels; day 3 uses H 14.5, L 12, C 14.
+        assert_eq!((pp[3], r1[3], s1[3]), (12.0, 16.0, 9.0));
         assert!((pp[4] - 40.5 / 3.0).abs() < 1e-12);
         let dm = pivots(&o, |ts| ts.div_euclid(day), PivotKind::Demark);
         // Day 1 closed above its open: X = 2H + L + C = 51.

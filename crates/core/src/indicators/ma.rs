@@ -269,9 +269,10 @@ pub fn super_smoother(values: &[f64], n: usize) -> Vec<f64> {
 }
 
 /// Ehlers' simple decycler: the series minus its two-pole high-pass component, which
-/// removes cycles shorter than `n` bars with no lag.
+/// removes cycles shorter than `n` bars with no lag. Cutoffs under 3 bars put the
+/// high-pass pole outside the unit circle, so they are blank.
 pub fn decycler(values: &[f64], n: usize) -> Vec<f64> {
-    if n == 0 {
+    if n < 3 {
         return vec![NAN; values.len()];
     }
     from_first(values, |v| {
@@ -473,6 +474,18 @@ mod tests {
             let seen = &price[15..=i];
             let (lo, hi) = seen.iter().fold((f64::MAX, f64::MIN), |(l, h), v| (l.min(*v), h.max(*v)));
             assert!(f[i] >= lo - 1e-9 && f[i] <= hi + 1e-9, "frama[{i}] = {} outside {lo}..{hi}", f[i]);
+        }
+    }
+
+    #[test]
+    fn decycler_is_stable_from_its_shortest_cutoff() {
+        let xs: Vec<f64> = (0..2000).map(|i| 100.0 + (i as f64 * 1.7).sin()).collect();
+        for n in 3..=10 {
+            let d = decycler(&xs, n);
+            assert!(d.iter().all(|v| (90.0..110.0).contains(v)), "cutoff {n} runs away");
+        }
+        for n in 0..3 {
+            assert!(decycler(&xs, n).iter().all(|v| v.is_nan()), "cutoff {n} is unstable");
         }
     }
 }

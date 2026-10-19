@@ -119,9 +119,15 @@ fn ln_ratio(a: f64, b: f64) -> f64 {
     if a > 0.0 && b > 0.0 { (a / b).ln() } else { NAN }
 }
 
+/// Annualised percentage volatility from a per-bar variance; rounding can leave tiny
+/// negative variances, which read as zero. Missing variances stay NaN.
+fn annualised(variance: f64, ppy: f64) -> f64 {
+    if variance.is_finite() { 100.0 * (variance.max(0.0) * ppy).sqrt() } else { NAN }
+}
+
 /// Annualised percentage volatility from a rolling mean of per-bar variance terms.
 fn annualise(terms: &[f64], n: usize, ppy: f64) -> Vec<f64> {
-    sma(terms, n).into_iter().map(|v| 100.0 * (v.max(0.0) * ppy).sqrt()).collect()
+    sma(terms, n).into_iter().map(|v| annualised(v, ppy)).collect()
 }
 
 /// Historical (close-to-close) volatility: annualised standard deviation of log returns, %.
@@ -170,12 +176,7 @@ pub fn yang_zhang(o: &Ohlcv, n: usize, ppy: f64) -> Vec<f64> {
     let sample = if n > 1 { k / (k - 1.0) } else { 1.0 };
     let w = 0.34 / (1.34 + (k + 1.0) / (k - 1.0).max(1.0));
     let (vo, vc, rs) = (variance(&overnight, n), variance(&intraday, n), sma(&rs_terms(o), n));
-    (0..o.len())
-        .map(|i| {
-            let v = sample * vo[i] + w * sample * vc[i] + (1.0 - w) * rs[i];
-            100.0 * (v.max(0.0) * ppy).sqrt()
-        })
-        .collect()
+    (0..o.len()).map(|i| annualised(sample * vo[i] + w * sample * vc[i] + (1.0 - w) * rs[i], ppy)).collect()
 }
 
 /// Ulcer index: root mean square of the percentage drawdown from the `n`-bar high.
@@ -268,6 +269,25 @@ mod tests {
         let c = 2.0 * std::f64::consts::LN_2 - 1.0;
         assert!(near(gk, 100.0 * ((0.5 * r * r - c * r * r) * ppy).sqrt()));
         assert!(yang_zhang(&o, 20, ppy)[100].is_finite());
+    }
+
+    #[test]
+    fn estimators_are_blank_until_their_window_fills() {
+        let rows: Vec<(f64, f64, f64, f64)> = (0..40).map(|i| (100.0, 101.0 + (i % 3) as f64, 99.0, 100.5)).collect();
+        let o = ohlcv(&rows);
+        for (name, v, first) in [
+            ("parkinson", parkinson(&o, 20, 252.0), 19),
+            ("garman-klass", garman_klass(&o, 20, 252.0), 19),
+            ("rogers-satchell", rogers_satchell(&o, 20, 252.0), 19),
+            ("yang-zhang", yang_zhang(&o, 20, 252.0), 20),
+        ] {
+            assert!(v[..first].iter().all(|x| x.is_nan()), "{name} reads before its window fills");
+            assert!(v[first..].iter().all(|x| x.is_finite() && *x > 0.0), "{name} is blank after warm-up");
+        }
+        // A bar with a non-positive price has no log range; its windows stay blank.
+        let mut rows = rows;
+        rows[30].2 = 0.0;
+        assert!(parkinson(&ohlcv(&rows), 20, 252.0)[30..].iter().all(|x| x.is_nan()));
     }
 
     #[test]

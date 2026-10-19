@@ -38,7 +38,8 @@
 - One registry (`tr-core::indicators::registry`) describes all 151 indicators: code and aliases,
   name, category, parameters (default, bounds, integer or real), overlay or pane, a fixed range and
   reference levels for bounded oscillators, and a compute function returning named, styled outputs
-  (line, histogram or dots; main, signal, up/down or extra series colours). The command line, the
+  (line, histogram, dots, or per-bar steps for session levels such as pivots; main, signal,
+  up/down or extra series colours). The command line, the
   `IND` picker (the ⌘K palette scoped to indicators, staying open to toggle several), the chart's
   right-click menu (one submenu per category), help, the worker and saved layouts all read it, so
   adding an indicator is one registry entry.

@@ -138,3 +138,37 @@ fn reveal_sweeps_in_from_the_left_and_fades() {
     let faded = draw(Reveal { opacity: 0.0, ..Reveal::DONE }, 3);
     assert_eq!(lit(&faded, 0, 800), 0, "opacity 0 draws nothing");
 }
+
+#[test]
+fn steps_draw_short_sessions_without_joining_them() {
+    let Some(mut h) = Headless::new(800, 400) else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    // Two-bar sessions alternating between 25 and 75 (pivots on a 4H equity chart), then a
+    // session of one bar at 50.
+    let mut levels: Vec<f64> = (0..39).map(|i| if i / 2 % 2 == 0 { 25.0 } else { 75.0 }).collect();
+    levels.push(50.0);
+    let v = Viewport::fit_last(levels.len(), levels.len(), 800.0);
+    let mut draw = |kind: LineKind, pane: u64| {
+        let o = [Overlay { line: line_ref(&levels), color: [1.0; 4], kind, scale: 1.0 }];
+        let out = sub_pane(&o, &v, 400.0, Some((0.0, 100.0)), Style::default());
+        h.render(&mut [Frame { pane, frame_no: pane, cmds: out.cmds }]);
+        h.read_pixels()
+    };
+    // Lit pixels in rows [y0, y1); 25 and 75 sit on rows 300 and 100, 50 on row 200.
+    let rows = |px: &[u8], y0: usize, y1: usize| {
+        px.as_chunks::<4>().0.iter().enumerate().filter(|(i, p)| (y0..y1).contains(&(i / 800)) && p[0] > 0).count()
+    };
+    let steps = draw(LineKind::Steps, 1);
+    if let Ok(dir) = std::env::var("TR_DUMP_DIR") {
+        dump_ppm(&format!("{dir}/steps.ppm"), 800, 400, &steps);
+    }
+    let (high, low, one_bar) = (rows(&steps, 95, 105), rows(&steps, 295, 305), rows(&steps, 195, 205));
+    eprintln!("steps: 75 {high}, 25 {low}, 50 {one_bar}");
+    assert!(high > 300 && low > 300, "every session draws its level");
+    assert!(one_bar > 10, "a one-bar session draws");
+    assert_eq!(rows(&steps, 110, 190) + rows(&steps, 210, 290), 0, "sessions are not joined");
+    let lines = draw(LineKind::Line, 2);
+    assert!(rows(&lines, 110, 190) > 0, "a line would join them");
+}

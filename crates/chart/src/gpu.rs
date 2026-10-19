@@ -155,6 +155,8 @@ pub enum LineKind {
     Hist,
     /// A square marker at each finite point.
     Dots,
+    /// A flat dash across each finite point's bar, with no joins between bars.
+    Steps,
 }
 
 #[derive(Clone)]
@@ -187,6 +189,7 @@ enum Pipe {
     Area,
     Hist,
     Dots,
+    Steps,
 }
 
 struct Resolved {
@@ -203,6 +206,7 @@ pub struct ChartRenderer {
     area: wgpu::RenderPipeline,
     hist: wgpu::RenderPipeline,
     dots: wgpu::RenderPipeline,
+    steps: wgpu::RenderPipeline,
     uniform_buf: wgpu::Buffer,
     uniform_bg: wgpu::BindGroup,
     storage_bgl: wgpu::BindGroupLayout,
@@ -314,6 +318,7 @@ impl ChartRenderer {
             area: make(&line_mod, "vs_area"),
             hist: make(&line_mod, "vs_hist"),
             dots: make(&line_mod, "vs_dots"),
+            steps: make(&line_mod, "vs_steps"),
             uniform_buf,
             uniform_bg,
             storage_bgl,
@@ -390,6 +395,7 @@ impl ChartRenderer {
                         LineKind::Area => Pipe::Area,
                         LineKind::Hist => Pipe::Hist,
                         LineKind::Dots => Pipe::Dots,
+                        LineKind::Steps => Pipe::Steps,
                     };
                     (pipe, (true, data.key), *range, uniforms)
                 }
@@ -415,6 +421,7 @@ impl ChartRenderer {
                 Pipe::Area => (&self.area, 6),
                 Pipe::Hist => (&self.hist, 6),
                 Pipe::Dots => (&self.dots, 6),
+                Pipe::Steps => (&self.steps, 6),
             };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &self.uniform_bg, &[d.slot * SLOT as u32]);

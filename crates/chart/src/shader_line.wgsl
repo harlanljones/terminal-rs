@@ -83,6 +83,22 @@ fn vs_hist(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     return rect(vi, cx - half, cx + half, y_ndc(u.extra.w), y_ndc(mix(u.extra.w, a.y, g)), color);
 }
 
+// Flat dash at point ii's level across the extra.z bars ending at its own bar (one bar, or
+// its group when zoomed out). Consecutive levels never join, so a session's pivot starts
+// afresh instead of stepping up from the last one.
+@vertex
+fn vs_steps(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
+    let a = pts[ii];
+    let x1 = a.x + 0.5;
+    let x0 = x1 - u.extra.z;
+    if (!finite(a.y) || x0 - u.rect.z >= u.anim.z) {
+        return degenerate();
+    }
+    let hy = px_to_ndc_y(u.params.z * 0.5);
+    let cy = y_ndc(a.y);
+    return rect(vi, x_ndc(x0), x_ndc(min(x1, u.rect.z + u.anim.z)), cy - hy, cy + hy, u.color);
+}
+
 // Square marker centred on point ii (e.g. parabolic SAR), sized from the line thickness.
 // Markers grow in behind the reveal front.
 @vertex

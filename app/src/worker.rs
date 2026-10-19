@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use tokio::sync::Mutex;
 use tr_chart::gpu::{LineKind, LineRef};
-use tr_chart::scene::{Overlay, SeriesGpu, line_ref};
+use tr_chart::scene::{Overlay, SeriesGpu, line_ref, marker_ref};
 use tr_congress::db::{Alert, PoliticianSummary};
 use tr_congress::performance::{self, Performance, TradeReturn};
 use tr_congress::refresh::{self, HttpSource, NewTradeAlert, RefreshConfig};
@@ -400,7 +400,8 @@ async fn congress_refresh(s: &Shared) {
 }
 
 fn overlay(values: &[f64], color: egui::Color32, kind: LineKind) -> Overlay {
-    Overlay { line: line_ref(values), color: theme::rgba(color), kind, scale: 1.0 }
+    let line = if kind == LineKind::Dots { marker_ref(values) } else { line_ref(values) };
+    Overlay { line, color: theme::rgba(color), kind, scale: 1.0 }
 }
 
 /// Compute every indicator on `bars`. The `i`-th indicator takes the `i`-th series colour;
@@ -437,6 +438,7 @@ pub fn build_indicators(
                         Plot::Line => LineKind::Line,
                         Plot::Hist => LineKind::Hist,
                         Plot::Dots => LineKind::Dots,
+                        Plot::Steps => LineKind::Steps,
                     };
                     (o.name.to_string(), overlay(&o.values, color, kind))
                 })
@@ -897,7 +899,7 @@ mod tests {
         let bars = tr_core::sample::generate("X", Timeframe::D1, 300, 1_790_000_000);
         let palette = crate::themes::terminal_light().palette(theme::DEFAULT_ACCENT);
         let specs: Vec<IndicatorSpec> =
-            ["BB", "MACD", "VWAP", "PSAR"].iter().map(|c| IndicatorSpec::new(c, &[]).unwrap()).collect();
+            ["BB", "MACD", "VWAP", "PSAR", "PIVOT"].iter().map(|c| IndicatorSpec::new(c, &[]).unwrap()).collect();
         let built = build_indicators(&bars, Timeframe::D1, &specs, &palette);
         assert_eq!(built[0].overlays.len(), 3);
         // The histogram draws first, under the MACD and signal lines.
@@ -906,6 +908,11 @@ mod tests {
         assert_eq!(built[2].overlays.len(), 1);
         assert!(built[3].overlays.iter().all(|(_, o)| o.kind == LineKind::Dots));
         assert_eq!(built[3].overlays[0].1.color, theme::rgba(palette.up));
+        // Every pair of bars holding a marker keeps one when zoomed out.
+        let up = &built[3].overlays[0].1.line.pyramid;
+        let pairs = up.data[..up.offsets[1]].chunks(2).filter(|c| c.iter().any(|p| p[1].is_finite())).count();
+        assert_eq!(up.data[up.offsets[1]..up.offsets[2]].iter().filter(|p| p[1].is_finite()).count(), pairs);
+        assert!(built[4].overlays.iter().all(|(_, o)| o.kind == LineKind::Steps));
     }
 
     #[test]

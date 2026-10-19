@@ -70,6 +70,9 @@ pub enum Plot {
     Hist,
     /// A marker per defined value.
     Dots,
+    /// A flat dash across each bar, so a level that changes (a new session's pivot)
+    /// starts afresh instead of joining the previous one.
+    Steps,
 }
 
 /// Colour role of an output; the app maps roles to its theme.
@@ -402,10 +405,13 @@ fn trail(t: Trail, plot: Plot) -> Vec<Output> {
 fn pivot_levels(i: &Input<'_>, kind: PivotKind) -> Vec<Output> {
     pivots(&i.d, session_key(i.tf), kind)
         .into_iter()
-        .map(|(name, v)| match name.as_bytes()[0] {
-            b'R' => down(name, v),
-            b'S' => up(name, v),
-            _ => line(name, v),
+        .map(|(name, v)| {
+            let tone = match name.as_bytes()[0] {
+                b'R' => Tone::Down,
+                b'S' => Tone::Up,
+                _ => Tone::Main,
+            };
+            out(name, v, Plot::Steps, tone)
         })
         .collect()
 }
@@ -508,7 +514,7 @@ fn catalog() -> Vec<Def> {
             .n("Length", 10.0)
             .multi(),
         overlay("DECYCLER", "Ehlers Simple Decycler", ma, |i, p| one("Decycler", decycler(i.c(), n(p, 0))))
-            .n("Cutoff", 125.0)
+            .int("Cutoff", 125.0, 3.0, MAX_LENGTH)
             .multi(),
         overlay("MAMA", "MESA Adaptive Moving Average", ma, |i, p| {
             let m = mama(i.c(), p[0], p[1]);
@@ -1265,6 +1271,27 @@ mod tests {
                         );
                     }
                     assert!(d.pane || o.plot != Plot::Hist, "{} draws a histogram over prices", d.code);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn overlays_stay_on_the_price_scale_across_their_parameter_bounds() {
+        for tf in [Timeframe::M5, Timeframe::D1] {
+            let bars = walk(1200, tf);
+            let input = Input::new(&bars, tf);
+            let lo = bars.iter().map(|b| b.low).fold(f64::INFINITY, f64::min);
+            let hi = bars.iter().map(|b| b.high).fold(f64::NEG_INFINITY, f64::max);
+            let (floor, ceil) = (lo - 10.0 * (hi - lo), hi + 10.0 * (hi - lo));
+            for d in all().iter().filter(|d| !d.pane) {
+                let lows: Vec<f64> = d.params.iter().map(|p| p.min).collect();
+                let highs: Vec<f64> = d.params.iter().map(|p| p.max).collect();
+                for params in [&lows[..], &[][..], &highs[..]] {
+                    for o in d.run(&input, params) {
+                        let off = o.values.iter().find(|v| v.is_finite() && !(floor..=ceil).contains(*v));
+                        assert!(off.is_none(), "{} {} {params:?} reaches {off:?}", d.code, o.name);
+                    }
                 }
             }
         }
