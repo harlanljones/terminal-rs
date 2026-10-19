@@ -31,16 +31,23 @@
 	<rect width="100" height="100" rx="22.5" fill="url(#{id}-glow)" />
 	<path d="M0 22.5A22.5 22.5 0 0 1 22.5 0h55A22.5 22.5 0 0 1 100 22.5V46H0Z" fill="url(#{id}-sheen)" />
 	<g transform="translate(0 2.6)" fill="#000" opacity="0.5">
-		<rect x="21" y="21" width="58" height="11.5" rx="5.75" />
-		<rect x="47.5" y="31" width="5" height="51" rx="2.5" />
-		<rect x="39" y="43" width="22" height="28" rx="5.5" />
+		<rect x="24.8" y="44" width="4.4" height="39" rx="2.2" />
+		<rect x="18" y="53" width="18" height="23" rx="4" />
+		<rect x="47.8" y="30" width="4.4" height="40" rx="2.2" />
+		<rect x="41" y="37" width="18" height="25" rx="4" />
+		<rect x="70.8" y="16" width="4.4" height="40" rx="2.2" />
+		<rect x="64" y="23" width="18" height="25" rx="4" />
 	</g>
 	<g fill="url(#{id}-glass)">
-		<rect x="21" y="21" width="58" height="11.5" rx="5.75" />
-		<rect x="47.5" y="31" width="5" height="51" rx="2.5" />
-		<rect x="39" y="43" width="22" height="28" rx="5.5" />
+		<rect x="24.8" y="44" width="4.4" height="39" rx="2.2" />
+		<rect x="18" y="53" width="18" height="23" rx="4" />
+		<rect x="47.8" y="30" width="4.4" height="40" rx="2.2" />
+		<rect x="41" y="37" width="18" height="25" rx="4" />
+		<rect x="70.8" y="16" width="4.4" height="40" rx="2.2" />
+		<rect x="64" y="23" width="18" height="25" rx="4" />
 	</g>
-	<rect x="24" y="22.3" width="52" height="1.4" rx="0.7" fill="#FFF" />
-	<rect x="42" y="44.3" width="16" height="1.4" rx="0.7" fill="#FFF" />
+	<rect x="21" y="54.3" width="12" height="1.2" rx="0.6" fill="#FFF" />
+	<rect x="44" y="38.3" width="12" height="1.2" rx="0.6" fill="#FFF" />
+	<rect x="67" y="24.3" width="12" height="1.2" rx="0.6" fill="#FFF" />
 	<rect x="0.5" y="0.5" width="99" height="99" rx="22" stroke="url(#{id}-rim)" />
 </svg>

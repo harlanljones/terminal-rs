@@ -53,5 +53,5 @@ Chromium. The script finds `google-chrome`, `google-chrome-stable`, `chromium` o
 ./scripts/build-images.sh
 ```
 
-The icon is the T mark from `src/lib/Logo.svelte`. The app bundle doesn't ship an icon yet; if it
+The icon is the candlestick mark from `src/lib/Logo.svelte`. The app bundle doesn't ship an icon yet; if it
 gets one, update both.
