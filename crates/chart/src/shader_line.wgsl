@@ -83,14 +83,15 @@ fn vs_hist(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     return rect(vi, cx - half, cx + half, y_ndc(u.extra.w), y_ndc(mix(u.extra.w, a.y, g)), color);
 }
 
-// Flat dash at point ii's level across the extra.z bars ending at its own bar (one bar, or
-// its group when zoomed out). Consecutive levels never join, so a session's pivot starts
-// afresh instead of stepping up from the last one.
+// Flat dash at point ii's level across the bars of its group (extra.z bars wide, one when
+// not zoomed out). The point is its group's last bar, so the dash runs from the group's
+// start to that bar; a short final group stays short. Consecutive levels never join, so a
+// session's pivot starts afresh instead of stepping up from the last one.
 @vertex
 fn vs_steps(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
     let a = pts[ii];
     let x1 = a.x + 0.5;
-    let x0 = x1 - u.extra.z;
+    let x0 = floor(a.x / u.extra.z) * u.extra.z;
     if (!finite(a.y) || x0 - u.rect.z >= u.anim.z) {
         return degenerate();
     }

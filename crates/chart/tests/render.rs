@@ -172,3 +172,31 @@ fn steps_draw_short_sessions_without_joining_them() {
     let lines = draw(LineKind::Line, 2);
     assert!(rows(&lines, 110, 190) > 0, "a line would join them");
 }
+
+#[test]
+fn zoomed_out_steps_stay_inside_their_group() {
+    let Some(mut h) = Headless::new(800, 400) else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    // 401 bars at one pixel each draw in groups of two; the last group holds only bar 400,
+    // which starts a new session at 75.
+    let mut levels = vec![25.0; 400];
+    levels.push(75.0);
+    let v = Viewport { right: 410.0, bar_px: 1.0, width_px: 800.0 };
+    let o = [Overlay { line: line_ref(&levels), color: [1.0; 4], kind: LineKind::Steps, scale: 1.0 }];
+    let out = sub_pane(&o, &v, 400.0, Some((0.0, 100.0)), Style::default());
+    h.render(&mut [Frame { pane: 1, frame_no: 0, cmds: out.cmds }]);
+    let px = h.read_pixels();
+    // Bar i spans columns [i + 390, i + 391); 75 sits on row 100.
+    let lit = |x0: usize, x1: usize| {
+        px.as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(i, p)| (95..105).contains(&(i / 800)) && (x0..x1).contains(&(i % 800)) && p[0] > 0)
+            .count()
+    };
+    assert!(lit(790, 791) > 0, "the new session draws on its own bar");
+    assert_eq!(lit(0, 790), 0, "and not over the previous session");
+}
