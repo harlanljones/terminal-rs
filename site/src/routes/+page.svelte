@@ -95,23 +95,6 @@
 		{ keys: ['F7'], label: 'Portfolio' },
 		{ keys: ['⌘', '⌥', 'T'], label: 'Cycle themes' }
 	];
-
-	const build = [
-		'git clone https://github.com/michaelshimeles/terminal-rs',
-		'cd terminal-rs && cargo build --release',
-		'scripts/bundle-macos.sh',
-		'open target/release/terminal-rs.app'
-	];
-
-	let copied = $state(false);
-	let copiedTimer: ReturnType<typeof setTimeout> | undefined;
-
-	async function copy() {
-		await navigator.clipboard.writeText(build.join('\n'));
-		copied = true;
-		clearTimeout(copiedTimer);
-		copiedTimer = setTimeout(() => (copied = false), 1800);
-	}
 </script>
 
 <svelte:head>
@@ -257,7 +240,7 @@
 		</ul>
 	</section>
 
-	<section id="install" class="section split" aria-labelledby="install-title">
+	<section id="install" class="section" aria-labelledby="install-title">
 		<div class="intro" {@attach reveal}>
 			<h2 id="install-title">Install</h2>
 			<p>Free. macOS {MIN_MACOS} or later on {ARCH}.</p>
@@ -265,19 +248,6 @@
 				{@render apple()}
 				Download for macOS
 			</a>
-		</div>
-		<div class="source" {@attach reveal}>
-			<div class="source-head">
-				<span>Build from source</span>
-				<button type="button" class="copy" onclick={copy}>
-					<span aria-live="polite">{copied ? 'Copied' : 'Copy'}</span>
-				</button>
-			</div>
-			<div class="lines">
-				{#each build as line (line)}
-					<code><span class="prompt" aria-hidden="true">$ </span>{line}</code>
-				{/each}
-			</div>
 		</div>
 	</section>
 </main>
@@ -583,6 +553,10 @@
 		line-height: 22px;
 	}
 
+	#install .intro p {
+		max-width: none;
+	}
+
 	.intro .download {
 		margin-top: 22px;
 	}
@@ -655,63 +629,6 @@
 		color: var(--muted);
 		font-size: 14px;
 		line-height: 18px;
-	}
-
-	.source {
-		overflow: hidden;
-		border-radius: 14px;
-		background: #111113;
-		box-shadow: 0 0 0 1px var(--line);
-	}
-
-	:global(:root[data-theme='light']) .source {
-		background: #fff;
-	}
-
-	.source-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		padding: 10px 10px 10px 14px;
-		border-bottom: 1px solid var(--line);
-		color: var(--muted);
-		font: 12px/16px var(--mono);
-	}
-
-	.copy {
-		min-width: 64px;
-		height: 26px;
-		padding: 0 10px;
-		border: 0;
-		border-radius: 7px;
-		background: var(--raised);
-		box-shadow: var(--raised-edge);
-		color: var(--fg);
-		font: 500 12px/14px var(--sans);
-		cursor: pointer;
-		transition: background-color 0.15s;
-	}
-
-	.copy:hover {
-		background-color: color-mix(in srgb, var(--fg) 8%, transparent);
-	}
-
-	.lines {
-		display: flex;
-		flex-direction: column;
-		padding: 16px;
-		overflow-x: auto;
-	}
-
-	code {
-		color: color-mix(in srgb, var(--fg) 85%, var(--bg));
-		font: 13px/23px var(--mono);
-		white-space: pre;
-	}
-
-	.prompt {
-		color: var(--muted);
-		user-select: none;
 	}
 
 	.footer {
