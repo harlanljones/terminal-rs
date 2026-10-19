@@ -47,8 +47,6 @@
 	<title>{TITLE}</title>
 	<meta name="description" content={DESCRIPTION} />
 	<link rel="canonical" href={url} />
-	<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f5f1" />
-	<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0b0b0a" />
 	<meta property="og:type" content="website" />
 	<meta property="og:site_name" content={NAME} />
 	<meta property="og:locale" content="en_US" />

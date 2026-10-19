@@ -22,8 +22,9 @@ npm run check
 - `src/routes/+page.svelte` is the page. It is prerendered with `csr = false`, so it ships no
   framework JavaScript.
 - `src/app.html` holds the only script: the theme toggle. It applies the saved choice, otherwise the
-  system appearance, and defaults to dark without JavaScript. Colours for both themes are CSS
-  variables in `src/app.css`.
+  system appearance, to the page and its `theme-color` tag, and defaults to dark without
+  JavaScript. Colours for both themes are CSS variables in `src/app.css`; the script repeats the
+  two background colours for `theme-color`.
 - `src/lib/site.ts` holds the version, architecture, minimum macOS, site URL and download URL,
   plus the name, title and description used by the page's metadata. Update it with each release.
   `static/robots.txt` and `static/sitemap.xml` repeat the site URL.
