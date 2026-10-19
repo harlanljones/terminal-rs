@@ -1,6 +1,6 @@
 # site
 
-The download page for terminal-rs. It is one static page built with SvelteKit for Vercel, plus a
+The download page for Terminal. It is one static page built with SvelteKit for Vercel, plus a
 `/download` route that redirects to the latest release DMG.
 
 This folder is its own npm project, separate from the Cargo workspace. Run the commands below from
@@ -24,8 +24,9 @@ npm run check
 - `src/app.html` holds the only script: the theme toggle. It applies the saved choice, otherwise the
   system appearance, and defaults to dark without JavaScript. Colours for both themes are CSS
   variables in `src/app.css`.
-- `src/lib/site.ts` holds the version, architecture, minimum macOS, site URL and download URL.
-  Update it with each release.
+- `src/lib/site.ts` holds the version, architecture, minimum macOS, site URL and download URL,
+  plus the name, title and description used by the page's metadata. Update it with each release.
+  `static/robots.txt` and `static/sitemap.xml` repeat the site URL.
 - `src/routes/download/+server.ts` answers `/download` with a 302 to
   `https://github.com/michaelshimeles/terminal-rs/releases/latest/download/terminal-rs-universal.dmg`.
   That URL works only once a GitHub release includes an asset named exactly
