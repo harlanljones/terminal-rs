@@ -42,7 +42,8 @@ npm run check
   `terminal-rs-universal.dmg`.
 - The download buttons open `src/lib/DownloadDialog.svelte`, which asks for an email, sends it to
   `POST /download`, then starts the download with `GET /download`. The browser remembers that it
-  gave an email, so later downloads skip the dialog. If saving fails, the download still starts.
+  gave an email, so later downloads skip the dialog. If saving fails or takes more than 3 seconds,
+  the download starts anyway.
   Without JavaScript the buttons link straight to `/download`.
 
 ## Emails

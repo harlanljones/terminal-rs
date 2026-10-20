@@ -5,6 +5,8 @@
 
 	/** Set once this browser has given an email, so later downloads skip the dialog. */
 	const GIVEN = 'download-email';
+	/** How long the download waits for the email to be saved before it starts anyway. */
+	const SAVE_TIMEOUT = 3000;
 
 	let dialog = $state<HTMLDialogElement>();
 	let sending = $state(false);
@@ -29,15 +31,20 @@
 		const form = event.currentTarget;
 		sending = true;
 		invalid = false;
-		const res = await fetch(form.action, { method: 'POST', body: new FormData(form) }).catch(
-			() => undefined
-		);
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), SAVE_TIMEOUT);
+		const res = await fetch(form.action, {
+			method: 'POST',
+			body: new FormData(form),
+			signal: controller.signal
+		}).catch(() => undefined);
+		clearTimeout(timer);
 		sending = false;
 		if (res?.status === 400) {
 			invalid = true;
 			return;
 		}
-		// A failed save still downloads. The dialog asks again next time.
+		// A failed or slow save still downloads. The dialog asks again next time.
 		if (res?.ok) {
 			try {
 				localStorage.setItem(GIVEN, '1');
