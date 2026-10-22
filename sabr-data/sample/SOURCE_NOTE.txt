@@ -1,0 +1,1 @@
+ lahman/People.csv (Box copy: ID,playerID,birthYear,birthMonth,...,debut,bbrefID,finalGame,retroID; 24,270 rows; released 2026-01-02, BOM update 2026-02-18)
