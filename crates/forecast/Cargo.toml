@@ -1,0 +1,13 @@
+[package]
+name = "sabr-forecast"
+description = "Walk-forward forecasting: Marcel batting projector, naive baseline, empirical intervals, scores and calibration gate (spec 4.4)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+sabr-data = { path = "../bdata" }
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+rusqlite.workspace = true

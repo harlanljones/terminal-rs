@@ -1,0 +1,9 @@
+[package]
+name = "sabr-model"
+description = "Entity / event / window / metric data model with on-demand series derivation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+time = { version = "0.3", default-features = false, features = ["std"] }
