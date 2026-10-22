@@ -186,6 +186,17 @@ pub(super) fn static_items() -> Vec<Item> {
             .keywords("grid arrange panes"),
         );
     }
+    for (token, label, summary) in TerminalApp::named_presets() {
+        v.push(
+            Item::new(
+                Kind::Layout,
+                label,
+                format!("{summary} · LAYOUT {token}"),
+                Target::Run(format!("LAYOUT {token}")),
+            )
+            .keywords("preset sabr briefing prospect war room"),
+        );
+    }
     for tab in SettingsTab::ALL {
         v.push(
             Item::new(

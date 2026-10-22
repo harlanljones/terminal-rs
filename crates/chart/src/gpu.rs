@@ -11,7 +11,7 @@ use bytemuck::{Pod, Zeroable};
 use egui_wgpu::wgpu;
 use wgpu::util::DeviceExt;
 
-use crate::lod::{BarPyramid, GpuBar, LinePyramid};
+use crate::lod::{BandPyramid, BarPyramid, GpuBar, LinePyramid};
 
 const SLOT: u64 = 256;
 const SLOTS: u64 = 4096;
@@ -148,6 +148,14 @@ pub struct LineRef {
     pub pyramid: Arc<LinePyramid>,
 }
 
+/// Handle to an uploaded-on-demand band pyramid (`[x, lo, hi]` points).
+#[derive(Clone)]
+pub struct BandRef {
+    pub key: u64,
+    pub version: u64,
+    pub pyramid: Arc<BandPyramid>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineKind {
     Line,
@@ -161,9 +169,28 @@ pub enum LineKind {
 
 #[derive(Clone)]
 pub enum DrawCmd {
-    Candles { data: SeriesRef, range: (u32, u32), uniforms: Uniforms },
-    Volume { data: SeriesRef, range: (u32, u32), uniforms: Uniforms },
-    Line { kind: LineKind, data: LineRef, range: (u32, u32), uniforms: Uniforms },
+    Candles {
+        data: SeriesRef,
+        range: (u32, u32),
+        uniforms: Uniforms,
+    },
+    Volume {
+        data: SeriesRef,
+        range: (u32, u32),
+        uniforms: Uniforms,
+    },
+    Line {
+        kind: LineKind,
+        data: LineRef,
+        range: (u32, u32),
+        uniforms: Uniforms,
+    },
+    /// Filled band between consecutive (lo, hi) points (e.g. an uncertainty envelope).
+    Band {
+        data: BandRef,
+        range: (u32, u32),
+        uniforms: Uniforms,
+    },
 }
 
 /// Everything one pane draws in one frame.
@@ -176,12 +203,14 @@ pub struct Frame {
 
 struct GpuBuffer {
     version: u64,
-    bind_group: wgpu::BindGroup,
+    /// Same storage buffer bound at point slot 0 and band slot 1.
+    bind0: wgpu::BindGroup,
+    bind1: wgpu::BindGroup,
     last_used: u64,
     _buffer: wgpu::Buffer,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Pipe {
     Candle,
     Volume,
@@ -190,6 +219,7 @@ enum Pipe {
     Hist,
     Dots,
     Steps,
+    Band,
 }
 
 struct Resolved {
@@ -207,6 +237,7 @@ pub struct ChartRenderer {
     hist: wgpu::RenderPipeline,
     dots: wgpu::RenderPipeline,
     steps: wgpu::RenderPipeline,
+    band: wgpu::RenderPipeline,
     uniform_buf: wgpu::Buffer,
     uniform_bg: wgpu::BindGroup,
     storage_bgl: wgpu::BindGroupLayout,
@@ -250,16 +281,29 @@ impl ChartRenderer {
         });
         let storage_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("chart-storage"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                // Band points ([x, lo, hi]); unused by the point pipelines.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("chart-layout"),
@@ -319,6 +363,7 @@ impl ChartRenderer {
             hist: make(&line_mod, "vs_hist"),
             dots: make(&line_mod, "vs_dots"),
             steps: make(&line_mod, "vs_steps"),
+            band: make(&line_mod, "vs_band"),
             uniform_buf,
             uniform_bg,
             storage_bgl,
@@ -355,12 +400,22 @@ impl ChartRenderer {
             contents: &contents,
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &self.storage_bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
-        });
-        self.buffers.insert((is_line, key), GpuBuffer { version, bind_group, last_used: frame, _buffer: buffer });
+        // The storage layout defines bindings 0 (points) and 1 (bands); a bind group
+        // must satisfy every binding in its layout, so both bind groups carry both
+        // entries bound to the same buffer (each pipeline reads only its own binding).
+        let both_entries = |label: &'static str| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some(label),
+                layout: &self.storage_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: buffer.as_entire_binding() },
+                ],
+            })
+        };
+        let bind0 = both_entries("chart-points");
+        let bind1 = both_entries("chart-band");
+        self.buffers.insert((is_line, key), GpuBuffer { version, bind0, bind1, last_used: frame, _buffer: buffer });
     }
 
     /// Upload any changed data and this frame's uniforms for one pane.
@@ -399,6 +454,12 @@ impl ChartRenderer {
                     };
                     (pipe, (true, data.key), *range, uniforms)
                 }
+                DrawCmd::Band { data, range, uniforms } => {
+                    self.ensure(device, true, data.key, data.version, || {
+                        bytemuck::cast_slice::<[f32; 3], u8>(&data.pyramid.data).to_vec()
+                    });
+                    (Pipe::Band, (true, data.key), *range, uniforms)
+                }
             };
             queue.write_buffer(&self.uniform_buf, slot as u64 * SLOT, bytemuck::bytes_of(uniforms));
             resolved.push(Resolved { pipe, key, slot, range });
@@ -422,10 +483,12 @@ impl ChartRenderer {
                 Pipe::Hist => (&self.hist, 6),
                 Pipe::Dots => (&self.dots, 6),
                 Pipe::Steps => (&self.steps, 6),
+                Pipe::Band => (&self.band, 6),
             };
+            let data = if d.pipe == Pipe::Band { &buf.bind1 } else { &buf.bind0 };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &self.uniform_bg, &[d.slot * SLOT as u32]);
-            pass.set_bind_group(1, &buf.bind_group, &[]);
+            pass.set_bind_group(1, data, &[]);
             pass.draw(0..verts, d.range.0..d.range.1);
         }
     }

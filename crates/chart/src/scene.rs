@@ -118,7 +118,7 @@ pub struct PaneOutput {
 }
 
 /// GPU transform for a pane laid out in points; the shader works in physical pixels.
-fn transform(v: &Viewport, height_pt: f64, scale: &PriceScale, ppp: f32) -> PaneTransform {
+pub(crate) fn transform(v: &Viewport, height_pt: f64, scale: &PriceScale, ppp: f32) -> PaneTransform {
     let (y_lo, y_hi) = scale.bounds_t();
     PaneTransform {
         width_px: v.width_px as f32 * ppp,
@@ -303,6 +303,39 @@ pub fn sub_pane(
     PaneOutput { cmds, scale, level: 0, vol_max: 0.0 }
 }
 
+/// Fan-chart bands (DR-3.40): three nested [x, lo, hi] ribbons around a median line.
+///
+/// `x` is the band's own index space (the caller's horizon points); the viewport must be sized
+/// to that length (`Viewport::fit_last(bands.len() as f64 * 2.0, len, width)` keeps the whole
+/// band plus room to pan). Bands draw back-to-front (95%, 80%, 50%) so the innermost is visible;
+/// the caller draws the median line on top. NaN endpoints drop the segment (the shader's
+/// degenerate rule), so warm-up projections with no interval model simply draw no bands.
+pub fn fan_bands(bands: [(&[f64], &[f64]); 3], v: &Viewport, style: &Style) -> (Vec<DrawCmd>, PriceScale) {
+    let len = bands[0].0.len().min(bands[0].1.len());
+    let mut ext: Option<(f64, f64)> = None;
+    for (l, h) in &bands {
+        for (a, b) in l.iter().zip(h.iter()) {
+            if a.is_finite() && b.is_finite() {
+                ext = Some(ext.map_or((*a, *b), |(x, y)| (x.min(*a), y.max(*b))));
+            }
+        }
+    }
+    let scale = PriceScale::padded(ext.unwrap_or((0.0, 1.0)).0, ext.unwrap_or((0.0, 1.0)).1, 0.1, false, v.width_px);
+    let t = transform(v, v.width_px, &scale, style.pixels_per_point);
+    let mut cmds = Vec::new();
+    for (i, (l, h)) in bands.into_iter().enumerate() {
+        let mut s = *style;
+        s.color = [style.color[0], style.color[1], style.color[2], 0.12 + 0.10 * i as f32];
+        let pyramid = Arc::new(crate::lod::BandPyramid::build(l, h));
+        cmds.push(DrawCmd::Band {
+            data: crate::gpu::BandRef { key: next_key(), version: 0, pyramid },
+            range: (0, (len.max(2) - 1) as u32),
+            uniforms: Uniforms::new(&t, &s),
+        });
+    }
+    (cmds, scale)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +449,7 @@ mod tests {
                 .map(|c| match c {
                     DrawCmd::Candles { uniforms, .. } | DrawCmd::Volume { uniforms, .. } => uniforms.anim,
                     DrawCmd::Line { uniforms, .. } => uniforms.anim,
+                    DrawCmd::Band { uniforms, .. } => uniforms.anim,
                 })
                 .collect::<Vec<_>>()
         };

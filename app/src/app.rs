@@ -31,7 +31,7 @@ use tr_data::{NewsItem, OrderBook, Quote, SearchHit, YieldCurves};
 
 use crate::anim;
 use crate::chart_view::ChartState;
-use crate::command::{self, Command, Function};
+use crate::command::{self, Command, CommandOutcome, Function};
 use crate::congress_view::{Action, FeedFilter};
 use crate::dock::{Node, PaneId};
 use crate::layout::Layout;
@@ -74,7 +74,28 @@ pub enum PaneKind {
     /// Brokerage accounts through SnapTrade (`PORT`, `ACCT`, `POS`, `ORD`, `ACTV`).
     Portfolio(Box<broker::PortfolioPane>),
     Settings,
+    /// Ranked catalog matches for an ambiguous entity token (`DIAZ CAST`): ephemeral, never
+    /// saved to a layout. Accepting rewrites the token to a direct entity key and re-executes.
+    EntityPick(Box<EntityPickPane>),
 }
+
+/// The disambiguation pane: ranked `CatalogHit` rows plus the rewriting context.
+pub struct EntityPickPane {
+    /// The original command line that resolved ambiguously.
+    pub command: String,
+    /// The ambiguous entity token inside `command`, textually replaced on accept.
+    pub token: String,
+    /// Ranked catalog hits, most prominent (longest span) first.
+    pub hits: Vec<command::CatalogHit>,
+    /// Keyboard/click selection into `hits`.
+    pub selected: usize,
+    /// Accepts used so far on the rewrite chain (capped, see `PICK_ROUNDS`).
+    pub rounds: u8,
+}
+
+/// Rewrites allowed when a rewritten command resolves to another picker (defensive cap; a
+/// rewritten token is a direct key, so the branch should never fire in practice).
+const PICK_ROUNDS: u8 = 3;
 
 pub struct OptionsPane {
     pub symbol: String,
@@ -189,6 +210,7 @@ impl PaneKind {
             PaneKind::Options(o) => format!("{} Options", short(&o.symbol)),
             PaneKind::Portfolio(p) => p.title(),
             PaneKind::Settings => "Settings".into(),
+            PaneKind::EntityPick(p) => format!("Pick: {}", p.token),
         }
     }
 
@@ -209,6 +231,7 @@ impl PaneKind {
             PaneKind::Options(_) => "OMON",
             PaneKind::Portfolio(p) => p.view.code(),
             PaneKind::Settings => "PDF",
+            PaneKind::EntityPick(_) => "PICK",
         }
     }
 
@@ -235,8 +258,10 @@ impl PaneKind {
         )
     }
 
-    fn settings(&self) -> PaneSettings {
-        match self {
+    /// Persisted settings for the pane; `None` for the ephemeral entity picker, which is
+    /// never saved to a layout.
+    fn settings(&self) -> Option<PaneSettings> {
+        Some(match self {
             PaneKind::Chart(c) => PaneSettings::Chart {
                 symbol: c.symbol.clone(),
                 tf: c.tf,
@@ -276,7 +301,8 @@ impl PaneKind {
                 sort: p.sort,
                 open_only: p.open_only,
             },
-        }
+            PaneKind::EntityPick(_) => return None,
+        })
     }
 
     fn from_settings(p: PaneSettings) -> PaneKind {
@@ -497,6 +523,19 @@ pub struct TerminalApp {
     last_frame: Option<Instant>,
 
     sidebar_open: bool,
+    // ---- sabr (wave 3) -------------------------------------------------------------
+    /// Request generation for sabr pane loads (cast/projection/backtest), monotonic.
+    sabr_gen: u64,
+    /// Latest derived series per entity, guarded by load generation (newest wins).
+    sabr_series: HashMap<String, (u64, std::sync::Arc<Vec<sabr_model::series::Point>>, String)>,
+    /// Tracked sabr entities' alerts (newest first).
+    sabr_alerts: Vec<sabr_data::track::AlertRow>,
+    /// Tracked entity keys.
+    sabr_tracked: Vec<String>,
+    /// Latest projection stamp per spec story 17 (`None` until a fit ran).
+    sabr_projection: Option<Box<crate::worker::SabrProjectionRow>>,
+    /// Latest backtest: (model, pooled wOBA MAE, scored seasons, gate pass).
+    sabr_backtest: Option<(String, f64, usize, bool)>,
     /// System accent colour (macOS) or the default blue.
     system_accent: Color32,
     last_accent_poll: Option<Instant>,
@@ -517,7 +556,25 @@ pub struct TerminalApp {
     palette: crate::palette::Palette,
 }
 
-/// Resolve a run of words (`BTCUSD CRNCY AAPL US EQUITY MSFT`) into market keys.
+/// The entity key a picked row resolves to: `p:<MLBAM id>:bat|pit`, where the role is the
+/// `.BAT`/`.PIT` suffix of the original token when present, else the row's catalog role
+/// evidence (a two-way player's bat identity mirrors `command::pick_role`).
+fn entity_key(hit: &command::CatalogHit, original_token: &str) -> Option<String> {
+    let mlbam = hit.mlbam?;
+    let suffix_role = |s: &str| match s.to_ascii_uppercase().as_str() {
+        "BAT" => Some("bat"),
+        "PIT" => Some("pit"),
+        _ => None,
+    };
+    let role = match original_token.rsplit_once('.').and_then(|(_, s)| suffix_role(s)) {
+        Some(r) => r,
+        None if hit.pit && !hit.bat => "pit",
+        None => "bat",
+    };
+    Some(format!("p:{mlbam}:{role}"))
+}
+
+/// Convert a run of words (`BTCUSD CRNCY AAPL US EQUITY MSFT`) into market keys.
 fn keys_from_words(words: &[String]) -> Vec<String> {
     let tokens: Vec<&str> = words.iter().map(String::as_str).collect();
     let mut out = Vec::new();
@@ -637,6 +694,12 @@ impl TerminalApp {
             perf_dt_ms: 0.0,
             last_frame: None,
             sidebar_open: true,
+            sabr_gen: 0,
+            sabr_series: HashMap::new(),
+            sabr_alerts: Vec::new(),
+            sabr_tracked: Vec::new(),
+            sabr_projection: None,
+            sabr_backtest: None,
             system_accent,
             last_accent_poll: None,
             window_styled: false,
@@ -737,12 +800,103 @@ impl TerminalApp {
     }
 
     fn execute(&mut self, input: &str) {
-        let Some(cmd) = command::parse(input) else {
+        let Some(outcome) = command::parse_outcome(input) else {
             self.status = format!("Unknown command: {input}  (HELP lists functions)");
             return;
         };
         self.cmd_history.push(input.trim().to_string());
-        self.dispatch(cmd);
+        match outcome {
+            CommandOutcome::Command(cmd) => self.dispatch(cmd),
+            CommandOutcome::PickList(hits) => self.open_entity_pick(input, hits),
+        }
+    }
+
+    /// Open (or replace) the ephemeral entity picker for `hits`, remembering the ambiguous
+    /// token in `input` for the rewrite. The toast stays as the fallback for the cases the
+    /// pane carries no usable rewrite (empty hit list or no token on the line).
+    fn open_entity_pick(&mut self, input: &str, hits: Vec<command::CatalogHit>) {
+        let token = command::ambiguous_token(input);
+        if hits.is_empty() || token.is_empty() {
+            self.status = format!("Ambiguous entity ({} matches) — no entity token on the line", hits.len());
+            self.toasts.push((self.status.clone(), Instant::now()));
+            return;
+        }
+        self.open_panel(PaneKind::EntityPick(Box::new(EntityPickPane {
+            command: input.trim().to_owned(),
+            token: token.clone(),
+            hits,
+            selected: 0,
+            rounds: 0,
+        })));
+        // Up/down and Enter move the picker, not the command line's history.
+        self.focus_cmd = false;
+        self.status = format!("Pick for {token:?} — Enter accepts, Esc cancels");
+    }
+
+    /// The pane index of an entity picker, if one is open.
+    fn pick_pane(&self) -> Option<usize> {
+        self.panes.iter().position(|p| matches!(p.kind, PaneKind::EntityPick(_)))
+    }
+
+    /// Close a picker from its Esc/×/button without executing anything.
+    fn close_pick(&mut self, id: PaneId) {
+        self.close_pane(id);
+        self.focus_cmd = true;
+        self.status = "Cancelled the pick".into();
+    }
+
+    /// Entity picker accept: rewrite the ambiguous token to the selected row's entity key
+    /// (`p:<MLBAM id>:bat|pit`, preserving an explicit `.BAT`/`.PIT` suffix) and re-execute
+    /// the original command. A rewritten token is a direct key, so re-resolution is exact;
+    /// the rounds cap is a defensive guard against any unexpected re-ambiguation.
+    fn accept_pick(&mut self, id: PaneId) {
+        let Some(i) = self.pick_pane().or_else(|| self.idx(id)) else { return };
+        let Some(PaneKind::EntityPick(p)) = self.panes.get(i).map(|pane| &pane.kind) else { return };
+        let Some(hit) = p.hits.get(p.selected) else { return };
+        if p.rounds >= PICK_ROUNDS {
+            self.status = format!("Pick chain capped after {PICK_ROUNDS} rounds — refine the name");
+            self.toasts.push((self.status.clone(), Instant::now()));
+            return;
+        }
+        let Some(key) = entity_key(hit, &p.token) else {
+            self.status = format!("Pick: {} has no MLBAM id to resolve", hit.name);
+            self.toasts.push((self.status.clone(), Instant::now()));
+            return;
+        };
+        let rounds = p.rounds;
+        let command = p.command.clone();
+        let token = p.token.clone();
+        let rewritten = command.replacen(&token, &key, 1);
+        match command::parse_outcome(&rewritten) {
+            // Still ambiguous: rewrite again in place, capped at `PICK_ROUNDS` rewrites.
+            Some(CommandOutcome::PickList(inner)) if rounds + 1 < PICK_ROUNDS => {
+                let Some(PaneKind::EntityPick(p)) = self.panes.get_mut(i).map(|pane| &mut pane.kind) else { return };
+                p.rounds = rounds + 1;
+                p.command = rewritten;
+                p.token = key;
+                p.hits = inner;
+                p.selected = 0;
+                self.status = format!(
+                    "Pick for {:?} — still ambiguous (round {}/{}), Enter accepts",
+                    p.token,
+                    rounds + 1,
+                    PICK_ROUNDS
+                );
+            }
+            Some(CommandOutcome::PickList(_)) => {
+                self.status = format!("Still ambiguous after {PICK_ROUNDS} rounds — refine the name");
+            }
+            Some(CommandOutcome::Command(cmd)) => {
+                self.close_pane(id);
+                self.focus_cmd = true;
+                self.dispatch(cmd);
+            }
+            None => {
+                self.close_pane(id);
+                self.focus_cmd = true;
+                self.status = format!("Unrecognised command: {rewritten}");
+            }
+        }
     }
 
     fn dispatch(&mut self, cmd: Command) {
@@ -805,6 +959,7 @@ impl TerminalApp {
             Function::Untrack(q) => self.worker.send(Request::Track { query: q, on: false }),
             Function::Alerts => {
                 self.worker.send(Request::Alerts);
+                self.worker.send(crate::worker::Request::SabrAlerts);
                 self.open_panel(PaneKind::Alerts);
             }
             Function::Refresh => self.worker.send(Request::RefreshCongress),
@@ -919,6 +1074,56 @@ impl TerminalApp {
                     self.status = format!("Already using the {} account", if live { "LIVE" } else { "DEMO" });
                 }
                 self.set_account_mode(mode, false);
+            }
+            // ---- sabr (wave 3) ------------------------------------------------------------
+            Function::Cast { entity, metric, window } => match entity {
+                Some(e) => {
+                    self.sabr_gen += 1;
+                    self.worker.send(crate::worker::Request::Series {
+                        entity_key: e.key.clone(),
+                        metric: metric.clone().unwrap_or_default(),
+                        window,
+                        as_of: None,
+                        generation: self.sabr_gen,
+                    });
+                    self.status = format!("{e}: cast series");
+                }
+                None => self.status = "Cast needs an entity — try `OHTANI.PIT CAST XWOBA 50`".into(),
+            },
+            Function::Proj { entity, horizon, model } => {
+                let Some(e) = entity else {
+                    self.status = "Projection needs an entity — try `OHTANI.PIT PROJ ROS`".into();
+                    return;
+                };
+                self.sabr_gen += 1;
+                self.worker.send(crate::worker::Request::Projection {
+                    entity_key: e.key.clone(),
+                    horizon,
+                    model,
+                    generation: self.sabr_gen,
+                });
+                // The fan chart lands in a chart pane focused on this entity (DR-3.40).
+                self.open_projection_pane(&e.key);
+                self.status = format!("{e}: project {}", horizon.label());
+            }
+            Function::Btst(model) if model.trim().is_empty() => {
+                self.status = "Backtest needs a model — try `BTST MARCEL`".into();
+            }
+            Function::Btst(model) => {
+                self.worker.send(crate::worker::Request::Backtest { model: model.clone() });
+                self.status = format!("Backtest {model} — full v1 walk-forward suite");
+            }
+            Function::Rost(team) if team.trim().is_empty() => {
+                self.status = "Roster needs a team — try `NYM ROST`".into();
+            }
+            Function::Rost(team) => self.worker.send(crate::worker::Request::Rost { what: team }),
+            Function::TrackPlayer(e) => {
+                self.worker
+                    .send(crate::worker::Request::TrackEntity { entity_key: e.key.clone(), label: e.label.clone() });
+            }
+            Function::UntrackPlayer(e) => {
+                self.worker
+                    .send(crate::worker::Request::UntrackEntity { entity_key: e.key.clone(), label: e.label.clone() });
             }
         }
     }
@@ -1079,6 +1284,95 @@ impl TerminalApp {
                     self.congress_checked = Some(chrono::Local::now());
                     self.status = format!("Congress disclosures updated: {summary}");
                     self.refresh_congress_views();
+                }
+                // ---- sabr (wave 3) -------------------------------------------------------
+                Response::SabrSeries { generation, entity_key, metric, points } => {
+                    // Store by generation: a stale response for the same entity loses to the
+                    // newest load (same rule as charts).
+                    let stale = self.sabr_series.get(&entity_key).is_some_and(|(g, _, _)| *g > generation);
+                    if !stale {
+                        self.sabr_series.insert(entity_key.clone(), (generation, points.clone(), metric.clone()));
+                        self.status =
+                            format!("{entity_key} {metric}: {} points derived (as of view time)", points.len());
+                    } else {
+                        tracing::debug!("dropped stale sabr series gen {generation} for {entity_key}");
+                    }
+                }
+                Response::SabrProjection { generation, entity_key, stamp, woba, pa, reliability, quantiles } => {
+                    // A completed run supersedes any earlier fit for the same request.
+                    tracing::debug!("sabr projection gen {generation} for {entity_key}");
+                    self.sabr_projection = Some(Box::new(crate::worker::SabrProjectionRow {
+                        entity_key: entity_key.clone(),
+                        stamp: *stamp.clone(),
+                        woba: woba.unwrap_or(f64::NAN),
+                        pa: pa.unwrap_or(f64::NAN),
+                        reliability: reliability.unwrap_or(f64::NAN),
+                        quantiles: quantiles.as_deref().cloned(),
+                    }));
+                    self.status = format!(
+                        "{entity_key}: {} v{} project — wOBA {:.3}, PA {:.0}, reliability {:.2}, as-of {}, band score {}",
+                        stamp.id,
+                        stamp.version,
+                        woba.unwrap_or(f64::NAN),
+                        pa.unwrap_or(f64::NAN),
+                        stamp.as_of,
+                        reliability.unwrap_or(f64::NAN),
+                        stamp.backtest_score.map(|s| format!("{s:.3}")).unwrap_or_else(|| "n/a".into()),
+                    );
+                }
+                Response::SabrBacktest { model, seasons, pooled_mae, gate_pass } => {
+                    self.sabr_backtest = Some((model.clone(), pooled_mae, seasons.len(), gate_pass));
+                    self.status = format!(
+                        "Backtest {model}: pooled wOBA MAE {pooled_mae:.3} over {} seasons, gate {}",
+                        seasons.len(),
+                        if gate_pass { "pass" } else { "FAIL" }
+                    );
+                }
+                Response::SabrTracked { entity_key, label, was_new } => {
+                    if !self.sabr_tracked.contains(&entity_key) {
+                        self.sabr_tracked.push(entity_key.clone());
+                    }
+                    let verb = if was_new { "Tracking" } else { "Already tracking" };
+                    self.toasts.push((
+                        format!(
+                            "{verb} {label} ({entity_key}) — {} series cached, {} alerts",
+                            self.sabr_series.len(),
+                            self.sabr_alerts.len()
+                        ),
+                        Instant::now(),
+                    ));
+                    self.status = format!("{verb} {label}");
+                }
+                Response::SabrUntracked { entity_key, label, was_tracked } => {
+                    self.sabr_tracked.retain(|k| *k != entity_key);
+                    self.toasts.push((
+                        if was_tracked {
+                            format!("Stopped tracking {label}")
+                        } else {
+                            format!("{label} was not tracked")
+                        },
+                        Instant::now(),
+                    ));
+                    self.status = format!("Untracked {label}");
+                }
+                Response::SabrAlerts(list) => {
+                    // Toast each unseen alert once (they were persisted seen-state in the store).
+                    for a in list.iter().filter(|a| !a.seen) {
+                        self.toasts.push((a.message.clone(), Instant::now()));
+                    }
+                    let unseen = list.iter().filter(|a| !a.seen).count();
+                    self.sabr_alerts = list;
+                    if unseen > 0 {
+                        self.status = format!("sabr alerts: {unseen} unseen");
+                    }
+                }
+                Response::Unsupported { reason } => {
+                    tracing::warn!("sabr request unsupported: {reason}");
+                    self.status = format!("Unsupported: {reason}");
+                }
+                Response::OutOfScope { what } => {
+                    tracing::info!("sabr request out of scope: {what}");
+                    self.status = format!("Out of scope this wave: {what}");
                 }
             }
         }
@@ -1391,6 +1685,79 @@ impl TerminalApp {
         self.toasts.retain(|(_, t)| t.elapsed() < Duration::from_secs(TOAST_SECS));
     }
 
+    /// Open (or focus) a chart pane and attach the latest projection's fan bands.
+    fn open_projection_pane(&mut self, entity_key: &str) {
+        if let Some(fan) = self.fan_from_projection(entity_key) {
+            // Reuse an existing chart pane showing this entity, else the focused chart pane.
+            let idx = self
+                .panes
+                .iter()
+                .position(|p| matches!(&p.kind, PaneKind::Chart(c) if c.fan.as_ref().is_some_and(|f| f.label.starts_with(entity_key))))
+                .or_else(|| self.panes.iter().position(|p| p.id == self.focus && matches!(p.kind, PaneKind::Chart(_))))
+                .or_else(|| self.panes.iter().position(|p| matches!(p.kind, PaneKind::Chart(_))));
+            match idx {
+                Some(i) => {
+                    if let PaneKind::Chart(c) = &mut self.panes[i].kind {
+                        c.fan = Some(fan);
+                    }
+                }
+                None => {
+                    // No chart pane exists: the bands ride on the status line only.
+                    tracing::debug!("no chart pane to attach the fan to");
+                }
+            }
+        }
+    }
+
+    /// Build the fan data from the latest projection row (12 horizon points, Jan..Oct).
+    fn fan_from_projection(&self, entity_key: &str) -> Option<crate::chart_view::FanData> {
+        let p = self.sabr_projection.as_ref()?;
+        if p.entity_key != entity_key {
+            return None;
+        }
+        let q = p.quantiles.as_ref()?;
+        let n = 12usize;
+        let median: Vec<f64> = (0..n).map(|_| p.woba).collect();
+        let band = |lo: f64, hi: f64| -> (Vec<f64>, Vec<f64>) {
+            ((0..n).map(|_| p.woba + lo).collect(), (0..n).map(|_| p.woba + hi).collect())
+        };
+        Some(crate::chart_view::FanData {
+            median,
+            bands: [band(q.q25, q.q75), band(q.q10, q.q90), band(q.q05, q.q95)],
+            label: format!("{entity_key} {}", p.stamp.id),
+        })
+    }
+
+    /// One headless UI pass over every pane — no window, no display server (the sandboxed
+    /// smoke). Returns the clipped-shape count so a blank frame is detectable.
+    pub(crate) fn headless_pass(&mut self, ctx: &egui::Context, rect: egui::Rect) -> usize {
+        let n = self.panes.len();
+        let mut shapes = 0;
+        for i in 0..n {
+            let input = egui::RawInput { screen_rect: Some(rect), ..Default::default() };
+            let out = ctx.run_ui(input, |ui| {
+                let _ = self.render_content(ui, i, rect, i + 1 == n);
+            });
+            shapes += out.shapes.len();
+        }
+        shapes
+    }
+
+    /// One headless smoke stage: optionally apply a command (a preset), then render every
+    /// pane `frames` times and report what was drawn. No window, no display server.
+    pub(crate) fn smoke_stage(&mut self, ctx: &egui::Context, command: Option<&str>, frames: u32) -> String {
+        if let Some(c) = command {
+            self.execute(c);
+        }
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let t0 = std::time::Instant::now();
+        let mut shapes = 0;
+        for _ in 0..frames.max(1) {
+            shapes = self.headless_pass(ctx, rect);
+        }
+        let ms = t0.elapsed().as_secs_f64() * 1000.0 / frames.max(1) as f64;
+        format!("{} panes, {shapes} clipped shapes, {ms:.2} ms/frame", self.panes.len())
+    }
     /// Save the active layout (only when it changed) and app settings.
     fn autosave(&mut self) {
         self.save_dirty_themes(true);
@@ -1614,7 +1981,258 @@ mod tests {
             PaneSettings::Settings,
             PaneSettings::Wei,
         ] {
-            assert_eq!(PaneKind::from_settings(s.clone()).settings(), s);
+            assert_eq!(PaneKind::from_settings(s.clone()).settings(), Some(s));
         }
+
+        // The entity picker is ephemeral: it has no PaneSettings, is skipped by the save
+        // path (`current_doc`) and therefore never survives a layout round trip.
+        let pick = PaneKind::EntityPick(Box::new(EntityPickPane {
+            command: "DIAZ CAST".into(),
+            token: "DIAZ".into(),
+            hits: Vec::new(),
+            selected: 0,
+            rounds: 0,
+        }));
+        assert_eq!(pick.settings(), None);
+        assert_eq!(pick.code(), "PICK");
+    }
+
+    // ---- entity picker harness ------------------------------------------------------------
+
+    /// A headless app over a probe worker writing nothing outside a temp data directory.
+    fn picker_app() -> (TerminalApp, tokio::sync::mpsc::UnboundedReceiver<crate::worker::Request>, egui::Context) {
+        let dir = std::env::temp_dir().join("terminal-rs-picker-tests");
+        // SAFETY: single-threaded harness startup; values are identical across tests.
+        unsafe { std::env::set_var("TR_DATA_DIR", &dir) };
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = egui::Context::default();
+        let (worker, reqs) = crate::worker::Worker::probe();
+        (TerminalApp::new(&ctx, worker, "sample".into()), reqs, ctx)
+    }
+
+    fn pick_of(app: &TerminalApp) -> &EntityPickPane {
+        let i = app.pick_pane().expect("picker pane is open");
+        match &app.panes[i].kind {
+            PaneKind::EntityPick(p) => p,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn ambiguous_entity_opens_the_ranked_picker() {
+        let (mut app, _reqs, _) = picker_app();
+        app.execute("DIAZ CAST");
+        let p = pick_of(&app);
+        let doc = app.current_doc();
+        assert_eq!(doc.panes.len(), 4, "default workspace is saved without the ephemeral picker");
+        assert_eq!(p.command, "DIAZ CAST");
+        assert_eq!(p.token, "DIAZ");
+        assert!(p.hits.len() > 2);
+        assert!(p.hits.iter().any(|h| h.name.contains("Díaz")));
+        assert!(p.hits.iter().all(|h| h.mlbam.is_some()));
+        assert!(!app.focus_cmd, "arrow keys move the selection, not the command line");
+        assert!(app.status.contains("Enter accepts"));
+    }
+
+    #[test]
+    fn accepting_a_pick_rewrites_the_token_and_reexecutes() {
+        let (mut app, mut reqs, _) = picker_app();
+        app.execute("DIAZ CAST");
+        let pane = app.pick_pane().unwrap();
+        let id = app.panes[pane].id;
+        // The key the selected top row maps to; the rewrite must resolve to exactly it.
+        let p = pick_of(&app);
+        let hit = &p.hits[p.selected];
+        let expected = entity_key(hit, &p.token).unwrap();
+        let expected_label = hit.name.clone();
+        while reqs.try_recv().is_ok() {}
+        app.accept_pick(id);
+        let mut series = None;
+        while let Ok(req) = reqs.try_recv() {
+            if let crate::worker::Request::Series { entity_key, .. } = &req {
+                assert!(series.is_none(), "exactly one cast ran");
+                assert_eq!(*entity_key, expected, "the rewritten cast targets the picked entity");
+                series = Some(entity_key.clone());
+            }
+        }
+        if series.is_none() {
+            panic!("the rewritten command never cast a series");
+        }
+        assert!(app.status.contains(&expected_label) && app.status.contains("cast series"));
+        assert_eq!(app.pick_pane(), None, "the picker closed");
+        assert!(app.focus_cmd);
+        while reqs.try_recv().is_ok() {}
+    }
+
+    #[test]
+    fn picker_arrow_keys_and_accept_move_the_selection() {
+        let (mut app, mut reqs, ctx) = picker_app();
+        app.execute("DIAZ CAST");
+        let pane = app.pick_pane().unwrap();
+        let i = pane;
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 320.0));
+        let key = |k: egui::Key| egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: k,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+                physical_key: None,
+            }],
+            ..Default::default()
+        };
+        let draw = |input, app: &mut TerminalApp| {
+            ctx.run_ui(input, |ui| {
+                let _ = app.render_content(ui, i, rect, true);
+            })
+            .textures_delta
+            .clear();
+        };
+        draw(key(egui::Key::ArrowDown), &mut app);
+        assert_eq!(pick_of(&app).selected, 1, "↓ moves the selection");
+        draw(key(egui::Key::ArrowUp), &mut app);
+        assert_eq!(pick_of(&app).selected, 0, "↑ moves back");
+        let p = pick_of(&app);
+        let expected = entity_key(&p.hits[p.selected], p.token.as_str()).unwrap();
+        while reqs.try_recv().is_ok() {}
+        draw(key(egui::Key::Enter), &mut app);
+        let mut series = None;
+        while let Ok(req) = reqs.try_recv() {
+            if let crate::worker::Request::Series { entity_key, .. } = &req {
+                assert!(series.is_none(), "exactly one cast ran");
+                assert_eq!(*entity_key, expected, "Enter accepts the selected row");
+                series = Some(entity_key.clone());
+            }
+        }
+        if series.is_none() {
+            panic!("the rewritten command never cast a series");
+        }
+        assert_eq!(app.pick_pane(), None);
+    }
+
+    #[test]
+    fn picker_esc_closes_without_rerunning() {
+        let (mut app, mut reqs, ctx) = picker_app();
+        app.execute("DIAZ CAST");
+        let pane = app.pick_pane().unwrap();
+        let i = pane;
+        while reqs.try_recv().is_ok() {}
+        let esc = egui::RawInput {
+            events: vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+                physical_key: None,
+            }],
+            ..Default::default()
+        };
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 320.0));
+        ctx.run_ui(esc, |ui| {
+            let _ = app.render_content(ui, i, rect, true);
+        })
+        .textures_delta
+        .clear();
+        assert_eq!(app.pick_pane(), None, "Esc closes the picker");
+        assert!(app.status.contains("Cancelled"));
+        while let Ok(req) = reqs.try_recv() {
+            assert!(
+                !matches!(req, crate::worker::Request::Series { .. } | crate::worker::Request::TrackEntity { .. }),
+                "no command ran after Esc"
+            );
+        }
+        assert!(app.focus_cmd, "the command line takes focus back");
+    }
+
+    #[test]
+    fn pick_rewrites_are_capped_after_three_rounds() {
+        let (mut app, mut reqs, _) = picker_app();
+        app.execute("DIAZ CAST");
+        let pane = app.pick_pane().unwrap();
+        let id = app.panes[pane].id;
+        if let PaneKind::EntityPick(p) = &mut app.panes[pane].kind {
+            p.rounds = PICK_ROUNDS;
+        }
+        while reqs.try_recv().is_ok() {}
+        app.accept_pick(id);
+        let status = app.status.clone();
+        assert!(status.contains("capped"), "unexpected status: {status}");
+        let p = pick_of(&app);
+        assert_eq!(p.rounds, PICK_ROUNDS, "the pane never rewrites past the cap");
+        assert!(reqs.try_recv().is_err(), "nothing ran at the cap");
+    }
+
+    // ---- named presets (DR-3.41) ----------------------------------------------------------
+
+    /// The pane kinds a preset docks, in document order.
+    fn preset_kinds(app: &TerminalApp) -> Vec<std::mem::Discriminant<PaneKind>> {
+        app.panes.iter().map(|p| std::mem::discriminant(&p.kind)).collect()
+    }
+
+    #[test]
+    fn named_presets_apply_in_order_round_trip_and_render() {
+        let expected: [&[_]; 3] = [
+            &[discriminant_wl(), discriminant_chart(), discriminant_feed(), discriminant_alrt(), discriminant_feed()],
+            &[discriminant_wl(), discriminant_feed(), discriminant_chart()],
+            &[discriminant_wl(), discriminant_chart(), discriminant_feed(), discriminant_chart()],
+        ];
+        for (i, (token, label, _)) in TerminalApp::named_presets().into_iter().enumerate() {
+            let (mut app, mut reqs, ctx) = picker_app();
+            while reqs.try_recv().is_ok() {}
+            assert_eq!(app.apply_named_preset(token), Some(token));
+            assert_eq!(app.layout_name, label, "{token} runs under its own label");
+            let want: Vec<_> = expected[i].to_vec();
+            assert_eq!(preset_kinds(&app), want, "{token} docks the mocked panes in order");
+
+            // The document round-trips through the saved layout (same kinds in order).
+            let doc = app.current_doc();
+            let doc_kinds: Vec<_> = doc
+                .panes
+                .iter()
+                .map(|sp| std::mem::discriminant(&PaneKind::from_settings(sp.settings.clone())))
+                .collect();
+            assert_eq!(doc_kinds, want, "{token} round-trips through PaneSettings");
+
+            // Each pane renders one frame without panicking.
+            for pi in 0..app.panes.len() {
+                let input = egui::RawInput::default();
+                ctx.run_ui(input, |ui| {
+                    let _ = app.render_content(
+                        ui,
+                        pi,
+                        egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(420.0, 320.0)),
+                        true,
+                    );
+                })
+                .textures_delta
+                .clear();
+            }
+            // The preset kicked off its pane loads: a series or projection per CAST/PROJ
+            // pane, plus the alert refresh for the morning briefing.
+            let mut loads = 0;
+            while let Ok(req) = reqs.try_recv() {
+                if matches!(req, Request::Series { .. } | Request::Projection { .. } | Request::SabrAlerts) {
+                    loads += 1;
+                }
+            }
+            assert!(loads >= 1, "{token} never kicked off its pane loads");
+        }
+    }
+
+    fn discriminant_wl() -> std::mem::Discriminant<PaneKind> {
+        std::mem::discriminant(&PaneKind::Watchlist)
+    }
+    fn discriminant_feed() -> std::mem::Discriminant<PaneKind> {
+        std::mem::discriminant(&PaneKind::Feed { filter: crate::congress_view::FeedFilter::default() })
+    }
+    fn discriminant_alrt() -> std::mem::Discriminant<PaneKind> {
+        std::mem::discriminant(&PaneKind::Alerts)
+    }
+    fn discriminant_chart() -> std::mem::Discriminant<PaneKind> {
+        std::mem::discriminant(&PaneKind::Chart(Box::new(crate::chart_view::ChartState::new(
+            0,
+            "AAPL",
+            Default::default(),
+        ))))
     }
 }

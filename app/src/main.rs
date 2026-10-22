@@ -12,6 +12,7 @@ mod layouts;
 mod markets_view;
 mod palette;
 mod prefs;
+mod sabr;
 mod theme;
 mod themes;
 mod widgets;
@@ -21,6 +22,13 @@ use std::time::Instant;
 
 fn main() -> eframe::Result {
     let t0 = Instant::now();
+
+    // `terminal-rs sabr <SUB>` runs the headless sabr CLI (spec §4.8) instead of the window.
+    let argv: Vec<String> = std::env::args().collect();
+    if argv.len() > 1 && argv[1] == "sabr" {
+        std::process::exit(sabr::run(&argv[2..]));
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()

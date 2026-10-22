@@ -5,7 +5,7 @@ use std::time::Instant;
 use egui::{Align2, Color32, Rect, RichText, Sense, Stroke, Ui, UiBuilder, pos2, vec2};
 use tr_data::OrderBook;
 
-use super::{PaneKind, TerminalApp};
+use super::{EntityPickPane, PaneKind, TerminalApp};
 use crate::congress_view::{self, Action};
 use crate::markets_view;
 use crate::theme::{self, amber, dp, mono, muted, text, ui_font};
@@ -29,7 +29,9 @@ impl TerminalApp {
         let mut child = ui.new_child(UiBuilder::new().max_rect(inner).id_salt(("pane", id)));
         child.set_clip_rect(inner.intersect(ui.clip_rect()));
         let ui = &mut child;
+        let mut picked = PickAction::None;
         match &mut self.panes[i].kind {
+            PaneKind::EntityPick(p) => picked = pick_rows(ui, p, focused),
             PaneKind::Feed { filter } => actions.extend(congress_view::feed(ui, &self.latest, filter, &freshness)),
             PaneKind::Ticker { symbol, trades, loading } => {
                 if *loading {
@@ -116,6 +118,19 @@ impl TerminalApp {
                 }
             }
             PaneKind::Watchlist | PaneKind::Settings | PaneKind::Help | PaneKind::Chart(_) => {}
+        }
+        match picked {
+            PickAction::Close => {
+                let id = self.panes[i].id;
+                self.close_pick(id);
+                return (actions, false);
+            }
+            PickAction::Accept => {
+                let id = self.panes[i].id;
+                self.accept_pick(id);
+                return (actions, false);
+            }
+            PickAction::None => {}
         }
         match self.panes[i].kind {
             PaneKind::Watchlist => actions.extend(self.watchlist(ui)),
@@ -443,6 +458,91 @@ fn order_book(ui: &mut Ui, b: &mut super::BookPane) -> Option<Action> {
     }
     ui.allocate_rect(rect, Sense::hover());
     ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
+    action
+}
+
+// ---- entity picker (ambiguous names) -----------------------------------------------------
+
+/// What the picker did with its keyboard / pointer input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PickAction {
+    None,
+    Accept,
+    Close,
+}
+
+fn pick_rows(ui: &mut Ui, p: &mut EntityPickPane, focused: bool) -> PickAction {
+    if p.hits.is_empty() {
+        ui.label(RichText::new("No matches.").color(muted()));
+        return PickAction::Close;
+    }
+    // ↑/↓ move the selection, Enter/Tab accept, Esc cancels — only when the pane is focused.
+    if focused {
+        let (up, down, accept, esc) = ui.input(|i| {
+            (
+                i.key_pressed(egui::Key::ArrowUp),
+                i.key_pressed(egui::Key::ArrowDown),
+                i.key_pressed(egui::Key::Enter) || i.key_pressed(egui::Key::Tab),
+                i.key_pressed(egui::Key::Escape),
+            )
+        });
+        if up {
+            p.selected = p.selected.saturating_sub(1);
+        }
+        if down {
+            p.selected = (p.selected + 1).min(p.hits.len() - 1);
+        }
+        if esc {
+            return PickAction::Close;
+        }
+        if accept {
+            return PickAction::Accept;
+        }
+    }
+    let mut action = PickAction::None;
+    ui.label(
+        RichText::new(format!("Ambiguous {} — {} matches, ranked by career span", p.token, p.hits.len()))
+            .color(muted()),
+    );
+    let w = ui.available_width();
+    let row_h = dp(24.0);
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        for (rank, hit) in p.hits.iter().enumerate() {
+            let (r, resp) = ui.allocate_exact_size(vec2(w, row_h), Sense::click());
+            widgets::hover_wash(ui, r, &resp, rank == p.selected);
+            if resp.clicked() {
+                p.selected = rank;
+            }
+            if resp.double_clicked() {
+                p.selected = rank;
+                action = PickAction::Accept;
+            }
+            let t = ui.painter();
+            let x = |frac: f32| r.left() + 8.0 + (r.width() - 16.0) * frac;
+            t.text(pos2(x(0.0), r.center().y), Align2::LEFT_CENTER, rank + 1, mono(12.0), muted());
+            t.text(pos2(x(0.05), r.center().y), Align2::LEFT_CENTER, &hit.name, ui_font(12.5), text());
+            let pos = match (hit.bat, hit.pit) {
+                (true, true) => "Bat/Pit",
+                (true, false) => "Bat",
+                (false, true) => "Pit",
+                (false, false) => "—",
+            };
+            t.text(pos2(x(0.55), r.center().y), Align2::LEFT_CENTER, pos, ui_font(11.0), muted());
+            t.text(
+                pos2(x(0.68), r.center().y),
+                Align2::LEFT_CENTER,
+                format!("{} seasons", hit.weight),
+                ui_font(11.0),
+                muted(),
+            );
+            t.text(pos2(x(1.0), r.center().y), Align2::RIGHT_CENTER, hit.mlbam.unwrap_or(0), mono(11.0), muted());
+        }
+    });
+    let sel = &p.hits[p.selected];
+    let key = super::entity_key(sel, p.token.as_str()).unwrap_or_else(|| "…".into());
+    ui.label(
+        RichText::new(format!("Open {key} — {name} · Enter/Tab accepts · Esc cancels", name = sel.name)).color(muted()),
+    );
     action
 }
 

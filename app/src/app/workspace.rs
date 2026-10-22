@@ -14,7 +14,7 @@ use crate::anim;
 use crate::congress_view::{Action, FeedFilter};
 use crate::dock::{Dir, Node, PaneId, Zone};
 use crate::layout::Layout;
-use crate::layouts::{LayoutDoc, Link, SavedPane, WindowGeometry};
+use crate::layouts::{LayoutDoc, Link, PaneSettings, SavedPane, WindowGeometry};
 use crate::theme::{self, amber, dp, mono, muted, text, ui_font};
 use crate::widgets::{self, Icon};
 use crate::worker::{Request, Worker};
@@ -276,6 +276,24 @@ fn expand_home(p: &str) -> PathBuf {
         Some(rest) => std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(rest),
         None => PathBuf::from(p),
     }
+}
+
+/// Per-pane worker load sent when a named preset applies. Panes that render shared state
+/// (feed, alerts) only need a refresh kick; duplicates keep `None`.
+enum PresetLoad {
+    None,
+    /// `<ENTITY> CAST <METRIC>`: derive a metric series on the worker (empty metric =
+    /// the role's headline rate).
+    Cast {
+        entity: &'static str,
+        metric: &'static str,
+    },
+    /// `<ENTITY> PROJ ROS` for the bundled player.
+    Proj,
+    /// Refresh the Congress transactions list.
+    Feed,
+    /// Refresh the congress and sabr alert lists.
+    Alerts,
 }
 
 impl TerminalApp {
@@ -737,6 +755,104 @@ impl TerminalApp {
         self.ensure_focus();
     }
 
+    // ---- named presets (DR-3.41) ----------------------------------------------------------
+
+    /// The three shipped presets (DR-3.41), scoped to the pane kinds implemented this wave.
+    /// Each entry: layout, then panes in dock order with their worker load. Substitutions
+    /// while the sibling arms (FARM, COMP, GAME, ROST, PROJ fan chart) land:
+    /// - Morning briefing: CAST watchlist → Watchlist; CAST movers → Chart + CAST series;
+    ///   FEED transactions → Congress Feed; ALRT → Alerts; GAME slate → Feed (no GAME arm).
+    /// - Prospect watch: FARM → Watchlist; FEED draft → Congress Feed; PROJ MLB-equivalent →
+    ///   Chart + PROJ ROS.
+    /// - War room: ROST roster → Watchlist (Rost is out of scope this wave); ROST WAR gaps →
+    ///   Chart + CAST series; COMP → Congress Feed; PROJ ROS fan → Chart + PROJ ROS (the
+    ///   CBT line and deadline T-minus chips land with the fan chart). ROST stays pinned to
+    ///   the wide column (`MainRight2`, DR-3.41), the fan sharing the right stack.
+    fn preset_spec(&self, name: &str) -> Option<(Layout, Vec<(PaneSettings, PresetLoad)>)> {
+        let chart = |symbol: &str| crate::layouts::chart_settings(symbol, &self.prefs.panels);
+        // The bundled sample player; its bat and pit logs both ship.
+        Some(match name {
+            "MORNING" => (
+                Layout::Grid3x2,
+                vec![
+                    (PaneSettings::Watchlist, PresetLoad::None),
+                    (chart("OHTANI"), PresetLoad::Cast { entity: "p:660271:bat", metric: "" }),
+                    (PaneSettings::Feed(None), PresetLoad::Feed),
+                    (PaneSettings::Alerts, PresetLoad::Alerts),
+                    (PaneSettings::Feed(None), PresetLoad::None),
+                ],
+            ),
+            "PROSPECTS" => (
+                Layout::MainRight2,
+                vec![
+                    (PaneSettings::Watchlist, PresetLoad::None),
+                    (PaneSettings::Feed(None), PresetLoad::Feed),
+                    (chart("OHTANI"), PresetLoad::Proj),
+                ],
+            ),
+            "WARROOM" => (
+                Layout::MainRight2,
+                vec![
+                    (PaneSettings::Watchlist, PresetLoad::None),
+                    (chart("OHTANI"), PresetLoad::Cast { entity: "p:660271:pit", metric: "pit:k_rate" }),
+                    (PaneSettings::Feed(None), PresetLoad::None),
+                    (chart("OHTANI"), PresetLoad::Proj),
+                ],
+            ),
+            _ => return None,
+        })
+    }
+
+    /// Preset name for the command line and palette: token, label, pane summary.
+    pub(super) fn named_presets() -> [(&'static str, &'static str, &'static str); 3] {
+        [
+            ("MORNING", "Morning briefing", "CAST watchlist · CAST movers · FEED · ALRT · GAME (DR-3.41)"),
+            ("PROSPECTS", "Prospect watch", "FARM · FEED draft · PROJ MLB-equivalent (DR-3.41)"),
+            ("WARROOM", "War room", "ROST · ROST WAR gaps · COMP · PROJ ROS (DR-3.41)"),
+        ]
+    }
+
+    /// Load a named preset (DR-3.41): `LAYOUT MORNING|PROSPECTS|WARROOM`. Replaces the dock
+    /// and kicks off each pane's worker load; returns the preset token.
+    pub(super) fn apply_named_preset(&mut self, name: &str) -> Option<&'static str> {
+        let (layout, panes) = self.preset_spec(name)?;
+        let label = Self::named_presets().into_iter().find(|(t, _, _)| *t == name).map(|(_, l, _)| l).unwrap_or(name);
+        let (settings, loads): (Vec<PaneSettings>, Vec<PresetLoad>) = panes.into_iter().unzip();
+        self.apply_doc(LayoutDoc::preset(label, layout, settings));
+        // `apply_doc` reassigns ids but keeps document order, so the loads zip across.
+        for (load, _) in loads.into_iter().zip(&self.panes) {
+            match load {
+                PresetLoad::None => {}
+                PresetLoad::Cast { entity, metric } => {
+                    self.sabr_gen += 1;
+                    self.worker.send(Request::Series {
+                        entity_key: entity.into(),
+                        metric: metric.into(),
+                        window: None,
+                        as_of: None,
+                        generation: self.sabr_gen,
+                    });
+                }
+                PresetLoad::Proj => {
+                    self.sabr_gen += 1;
+                    self.worker.send(Request::Projection {
+                        entity_key: "p:660271:bat".into(),
+                        horizon: crate::command::Horizon::RoS,
+                        model: None,
+                        generation: self.sabr_gen,
+                    });
+                }
+                PresetLoad::Feed => self.worker.send(Request::Latest { limit: 2_000 }),
+                PresetLoad::Alerts => {
+                    self.worker.send(Request::Alerts);
+                    self.worker.send(Request::SabrAlerts);
+                }
+            }
+        }
+        self.status = format!("Preset {:?}", self.layout_name);
+        Self::named_presets().into_iter().find(|(t, _, _)| *t == name).map(|(t, _, _)| t)
+    }
+
     // ---- saved layouts -------------------------------------------------------------------
 
     pub(super) fn current_doc(&self) -> LayoutDoc {
@@ -747,9 +863,10 @@ impl TerminalApp {
             panes: self
                 .panes
                 .iter()
-                .map(|p| SavedPane {
+                .filter_map(|p| Some((p, p.kind.settings()?)))
+                .map(|(p, s)| SavedPane {
                     id: p.id,
-                    settings: p.kind.settings(),
+                    settings: s,
                     link: p.link,
                     title: p.title.clone(),
                     window: p.window,
@@ -843,6 +960,13 @@ impl TerminalApp {
             && let Some(l) = Layout::parse(&first)
         {
             self.apply_preset(l);
+            return;
+        }
+        // Named presets (DR-3.41): `LAYOUT MORNING|PROSPECTS|WARROOM`.
+        if words.len() == 1
+            && let Some(preset) = Self::named_presets().into_iter().find(|(t, _, _)| t == &first)
+        {
+            self.apply_named_preset(preset.0);
             return;
         }
         let op = match first.as_str() {

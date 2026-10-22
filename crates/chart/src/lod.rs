@@ -133,9 +133,23 @@ pub struct LinePyramid {
 }
 
 impl LinePyramid {
-    /// Keeps the later point of each pair (its value is the group's close).
+    /// Keeps the later point of each pair (its value is the group's close). This can
+    /// silently swallow NaN points: a pair whose later point is finite keeps a finite
+    /// value even when the earlier one was undefined, so one-point gaps get bridged with
+    /// roughly `1/2` probability per level.
     pub fn build(values: &[f64]) -> Self {
         Self::reduce(values, |_, later| later)
+    }
+
+    /// Gap-preserving variant: a merged group stays undefined if any point inside it was
+    /// undefined, so a gap of any width survives every level.
+    pub fn build_gaps(values: &[f64]) -> Self {
+        Self::reduce(
+            values,
+            |earlier, later| {
+                if earlier[1].is_nan() || later[1].is_nan() { [later[0], f32::NAN] } else { later }
+            },
+        )
     }
 
     /// For sparse markers: a pair whose later point is blank keeps the earlier one, so
@@ -193,6 +207,81 @@ impl LinePyramid {
             let v = p[1] as f64;
             if v.is_finite() {
                 out = Some(out.map_or((v, v), |(l, h)| (l.min(v), h.max(v))));
+            }
+        }
+        out
+    }
+}
+
+/// A band series (e.g. an uncertainty envelope) with the same pyramid levels as
+/// [`LinePyramid`]: each point is `[x, lo, hi]` (lo <= hi in level-0 space) and level `k`
+/// merges `2^k` consecutive points keeping the group's minimum lo and maximum hi, at the
+/// later point's x so segments join like lines.
+#[derive(Debug, Clone, Default)]
+pub struct BandPyramid {
+    pub data: Vec<[f32; 3]>,
+    pub offsets: Vec<usize>,
+}
+
+impl BandPyramid {
+    pub fn build(lo: &[f64], hi: &[f64]) -> Self {
+        let n = lo.len().min(hi.len());
+        let mut data: Vec<[f32; 3]> = (0..n).map(|i| [i as f32 + 0.5, lo[i] as f32, hi[i] as f32]).collect();
+        let mut offsets = vec![0];
+        let (mut start, mut m) = (0, n);
+        while m > 1 {
+            let next_start = data.len();
+            for j in (0..m).step_by(2) {
+                let merged = if j + 1 < m {
+                    let a = data[start + j];
+                    let b = data[start + j + 1];
+                    [b[0], a[1].min(b[1]), a[2].max(b[2])]
+                } else {
+                    data[start + j]
+                };
+                data.push(merged);
+            }
+            offsets.push(next_start);
+            start = next_start;
+            m = m.div_ceil(2);
+        }
+        Self { data, offsets }
+    }
+
+    pub fn levels(&self) -> usize {
+        self.offsets.len()
+    }
+
+    pub fn level_len(&self, k: usize) -> usize {
+        self.offsets.get(k + 1).copied().unwrap_or(self.data.len()) - self.offsets[k]
+    }
+
+    /// Absolute band-segment range: segment `i` joins points `i` and `i+1`, with one
+    /// extra point on each side like [`LinePyramid::segment_range`].
+    pub fn segment_range(&self, k: usize, lo: usize, hi: usize) -> (u32, u32) {
+        let n = self.level_len(k);
+        if n < 2 {
+            return (0, 0);
+        }
+        let a = (lo >> k).saturating_sub(1).min(n - 1);
+        let b = (hi.div_ceil(1 << k) + 1).min(n - 1);
+        let off = self.offsets[k];
+        ((off + a) as u32, (off + b.max(a)) as u32)
+    }
+
+    /// Finite min/max over the (lo, hi) point range `[lo, hi)` at level `k`.
+    pub fn extent(&self, k: usize, lo: usize, hi: usize) -> Option<(f64, f64)> {
+        let n = self.level_len(k);
+        let a = (lo >> k).min(n);
+        let b = hi.div_ceil(1 << k).min(n);
+        let off = self.offsets[k];
+        let mut out: Option<(f64, f64)> = None;
+        for p in &self.data[off + a..off + b] {
+            for v in [p[1], p[2]] {
+                let v = v as f64;
+                if v.is_finite() {
+                    out = Some(out.map_or((v, v), |(l, h)| (l.min(v), h.max(v))));
+                }
             }
         }
         out
@@ -277,5 +366,69 @@ mod tests {
             assert!(level.contains(&[2.5, 5.0]) && level.contains(&[9.5, 7.0]), "level {k}");
         }
         assert_eq!(marks.data[marks.offsets[marks.levels() - 1]], [9.5, 7.0]);
+    }
+
+    #[test]
+    fn build_gaps_never_bridges_a_three_point_gap() {
+        let mut v: Vec<f64> = (0..512).map(|i| 10.0 + 5.0 * (i as f64 * 0.1).sin()).collect();
+        for i in [400usize, 401, 402] {
+            v[i] = f64::NAN;
+        }
+        // Deliberately place the gap at even indices, where the plain build loses it.
+        let n = 256usize;
+        let mut w: Vec<f64> = (0..n).map(|i| (i as f64 * 0.05).sin()).collect();
+        for i in [10usize, 11, 12, 40, 41, 42] {
+            w[i] = f64::NAN;
+        }
+        let plain = LinePyramid::build(&w);
+        let gap = LinePyramid::build_gaps(&w);
+        // The plain build does lose at least one gap at some level (documents the bug).
+        for i in [10usize, 40] {
+            assert!(
+                (1..plain.levels()).any(|k| {
+                    let g = plain.data[plain.offsets[k] + (i >> k)];
+                    g[1].is_finite()
+                }),
+                "plain build should lose the gap starting at {i}"
+            );
+        }
+        // The gap-preserving build keeps every covering group undefined at every level.
+        for k in 0..gap.levels() {
+            for i in [10usize, 11, 12, 40, 41, 42] {
+                let g = gap.data[gap.offsets[k] + (i >> k)];
+                assert!(g[1].is_nan(), "level {k}: point {i} merged into a defined group");
+            }
+        }
+        // And the 128-point series keeps its gap: no segment at any level has finite
+        // endpoints on strictly opposite sides of it. The merge keeps the later point's
+        // x, so the group covering 400..403 at level k carries x >= 400 and may sit just
+        // inside the gap edge; only a finite→finite segment that spans the gap is a bug.
+        let kept = LinePyramid::build_gaps(&v);
+        for k in 1..kept.levels() {
+            let off = kept.offsets[k];
+            let n = kept.level_len(k);
+            let lvl = &kept.data[off..off + n];
+            for j in 0..n - 1 {
+                let (x0, v0) = (lvl[j][0] as i64, lvl[j][1]);
+                let (x1, v1) = (lvl[j + 1][0] as i64, lvl[j + 1][1]);
+                if v0.is_finite() && v1.is_finite() {
+                    assert!(x1 < 400 || x0 > 402, "level {k}: segment ({x0}, {x1}) crosses the gap");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn band_pyramid_merges_min_lo_max_hi() {
+        let lo: Vec<f64> = (0..16).map(|i| i as f64).collect();
+        let hi: Vec<f64> = (0..16).map(|i| (i + 2) as f64).collect();
+        let p = BandPyramid::build(&lo, &hi);
+        assert_eq!(p.levels(), 5); // 16, 8, 4, 2, 1
+        assert_eq!(p.data[p.offsets[1]], [1.5, 0.0, 3.0]);
+        // Group 8..12 (level-2 index 2): lo = min(8..12) = 8, hi = max(8..12) + 2 = 13, x = 11.5.
+        assert_eq!(p.data[p.offsets[2] + 2], [11.5, 8.0, 13.0]);
+        assert_eq!(p.extent(0, 0, 16), Some((0.0, 17.0)));
+        assert_eq!(p.segment_range(0, 3, 6), (2, 7));
+        assert_eq!(p.segment_range(0, 0, 0), (0, 1), "one extra point keeps continuity");
     }
 }

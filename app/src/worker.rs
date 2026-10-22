@@ -7,6 +7,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
+use sabr_data::savant::{self, SavantMode};
+use sabr_data::track::{AlertRow, TrackStore};
+use sabr_model::entity::Entity;
+use sabr_model::metric::registry;
+use time::Date;
 use tokio::sync::Mutex;
 use tr_chart::gpu::{LineKind, LineRef};
 use tr_chart::scene::{Overlay, SeriesGpu, line_ref, marker_ref};
@@ -121,6 +126,47 @@ pub enum Request {
     Forget(PaneId),
     YieldCurves,
     Search(String),
+    // ---- sabr (wave 3): series / projection / backtest / watchlist ----------------------
+    /// `<ENTITY> CAST <METRIC> [WINDOW] [<AS-OF YYYY-MM-DD>]`: derive a metric series from the
+    /// bundled sample; `as_of` defaults to today.
+    Series {
+        entity_key: String,
+        metric: String,
+        /// `None` uses the metric's default window.
+        window: Option<sabr_model::window::Window>,
+        /// `None` = today's UTC date.
+        as_of: Option<Date>,
+        /// Load generation for the UI's newest-wins guard.
+        generation: u64,
+    },
+    /// `<ENTITY> PROJ ROS|NEXT [MODEL]`.
+    Projection {
+        entity_key: String,
+        horizon: crate::command::Horizon,
+        model: Option<String>,
+        /// Load generation for the UI's newest-wins guard.
+        generation: u64,
+    },
+    /// `BTST <MODEL>`: the full v1 walk-forward suite for one model.
+    Backtest {
+        model: String,
+    },
+    /// `NYM ROST` — out of scope in this wave; answered as [`Response::OutOfScope`].
+    Rost {
+        what: String,
+    },
+    /// Track a resolved player entity (`TRACK OHTANI`).
+    TrackEntity {
+        entity_key: String,
+        label: String,
+    },
+    /// Untrack (`UNTRACK OHTANI`).
+    UntrackEntity {
+        entity_key: String,
+        label: String,
+    },
+    /// Refresh the sabr alerts list (track store).
+    SabrAlerts,
     /// Order entry (see `app::trading`); only sent once trading is enabled.
     Trade(TradeRequest),
 }
@@ -277,6 +323,103 @@ pub enum Response {
         hits: Vec<SearchHit>,
     },
     Trade(Box<TradeResponse>),
+    // ---- sabr (wave 3) --------------------------------------------------------------
+    /// A derived metric series for a bundled player.
+    SabrSeries {
+        generation: u64,
+        entity_key: String,
+        metric: String,
+        points: Arc<Vec<sabr_model::series::Point>>,
+    },
+    /// A projection with its registry stamp (spec story 17: model id, version, training
+    /// window, as-of date, last backtest score).
+    SabrProjection {
+        generation: u64,
+        entity_key: String,
+        stamp: Box<SabrModelStamp>,
+        woba: Option<f64>,
+        pa: Option<f64>,
+        reliability: Option<f64>,
+        /// Fan-chart bands from the latest artifact's interval model (DR-3.40).
+        quantiles: Option<Box<SabrQuantiles>>,
+    },
+    /// A model's backtest: season-score rows plus the pooled MAE and gate verdict.
+    SabrBacktest {
+        model: String,
+        seasons: Vec<SabrSeasonScore>,
+        pooled_mae: f64,
+        gate_pass: bool,
+    },
+    /// `TRACK` accepted; `was_new` distinguishes a fresh add.
+    SabrTracked {
+        entity_key: String,
+        label: String,
+        was_new: bool,
+    },
+    /// `UNTRACK` accepted; `was_tracked` distinguishes a real removal.
+    SabrUntracked {
+        entity_key: String,
+        label: String,
+        was_tracked: bool,
+    },
+    /// The current sabr alerts list (newest first).
+    SabrAlerts(Vec<AlertRow>),
+    /// The request was understood but has no implementation on this path.
+    Unsupported {
+        reason: String,
+    },
+    /// The request is a documented stub in this wave (e.g. `NYM ROST`).
+    OutOfScope {
+        what: String,
+    },
+}
+
+/// Projection registry stamp (spec story 17).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SabrModelStamp {
+    /// Model id `marcel.batting/1.0.0`.
+    pub id: String,
+    pub version: String,
+    pub train_window: String,
+    pub as_of: time::Date,
+    /// Pooled wOBA MAE of the model's latest backtest, when its score is cached.
+    pub backtest_score: Option<f64>,
+}
+
+/// De-standardised forecast bands for the fan chart (DR-3.40): additive deltas on the
+/// projection, p05..p95. `None` while the interval model is in warm-up (DR-3.21a).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SabrQuantiles {
+    pub q05: f64,
+    pub q10: f64,
+    pub q25: f64,
+    pub q50: f64,
+    pub q75: f64,
+    pub q90: f64,
+    pub q95: f64,
+}
+
+/// A projection with its registry stamp and bands, stored by the drain for the pane.
+#[derive(Debug, Clone)]
+pub struct SabrProjectionRow {
+    pub entity_key: String,
+    pub stamp: SabrModelStamp,
+    pub woba: f64,
+    /// Projected PA (season total); read by the fan pane's status line and future PA axes.
+    #[allow(dead_code)]
+    pub pa: f64,
+    #[allow(dead_code)]
+    pub reliability: f64,
+    pub quantiles: Option<SabrQuantiles>,
+}
+
+/// One scored backtest season for the pane table.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SabrSeasonScore {
+    pub season: u16,
+    pub mae: f64,
+    pub pa_mae: f64,
+    pub gate_pass: bool,
 }
 
 pub struct Worker {
@@ -295,6 +438,13 @@ struct Shared {
     series: std::sync::Mutex<SeriesMap>,
     cache: std::sync::Mutex<Option<BarCache>>,
     db: Mutex<Db>,
+    /// Tracked sabr entities and their alerts (`crates/bdata/src/track.rs`).
+    track: TrackStore,
+    /// Pooled backtest MAE per model id, cached once a `BTST` run completed.
+    btst_scores: std::sync::Mutex<HashMap<String, f64>>,
+    /// The artifact registry index (DR-3.22): the projection arm reads the latest fitted
+    /// interval model from here (DR-3.40 bands). `None` when the index cannot be opened.
+    artifacts: Option<sabr_forecast::artifact::ArtifactIndex>,
     out: mpsc::Sender<Response>,
     ctx: egui::Context,
 }
@@ -331,6 +481,10 @@ impl Worker {
         })?;
         let cache =
             BarCache::open(dir.join("bars.sqlite3")).map_err(|e| tracing::warn!("bar cache unavailable: {e:#}")).ok();
+        let track = TrackStore::open(dir.join("track.sqlite3")).or_else(|e| {
+            tracing::warn!("track store unavailable ({e:#}); using in-memory store");
+            TrackStore::open_in_memory()
+        })?;
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
             .enable_all()
@@ -338,11 +492,21 @@ impl Worker {
             .build()?;
         let (tx, mut req_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
         let (out, rx) = mpsc::channel();
+        let artifacts = {
+            let paths = crate::sabr::CliPaths::from_dirs(&sabr_data::xdg::XdgDirs::from_env());
+            let _ = std::fs::create_dir_all(&paths.artifacts);
+            sabr_forecast::artifact::ArtifactIndex::open(&paths.artifacts.join("index.sqlite3"))
+                .map_err(|e| tracing::warn!("artifact index unavailable ({e}); projections show no bands"))
+                .ok()
+        };
         let shared = Arc::new(Shared {
             provider,
             series: Default::default(),
             cache: std::sync::Mutex::new(cache),
             db: Mutex::new(db),
+            track,
+            artifacts,
+            btst_scores: std::sync::Mutex::new(HashMap::new()),
             out,
             ctx,
         });
@@ -378,6 +542,17 @@ impl Worker {
 
     pub fn send(&self, req: Request) {
         let _ = self.tx.send(req);
+    }
+
+    /// A no-op worker for app tests: no dispatcher runs, requests pile into the returned
+    /// channel for the test to inspect, and responses stay inside a channel nothing writes.
+    #[cfg(test)]
+    pub(crate) fn probe() -> (Worker, tokio::sync::mpsc::UnboundedReceiver<Request>) {
+        let rt = tokio::runtime::Builder::new_current_thread().build().expect("probe runtime");
+        let (tx, req_rx) = tokio::sync::mpsc::unbounded_channel::<Request>();
+        let (out, rx) = mpsc::channel::<Response>();
+        std::mem::forget(out);
+        (Worker { tx, rx, _rt: rt }, req_rx)
     }
 }
 
@@ -695,7 +870,294 @@ async fn handle(s: &Arc<Shared>, req: Request) {
             s.send(Response::SearchHits { query, hits });
         }
         Request::Trade(t) => s.send(Response::Trade(Box::new(trade(t).await))),
+        // ---- sabr (wave 3) ----------------------------------------------------------
+        Request::Series { entity_key, metric, window, as_of, generation } => {
+            handle_series(s, generation, &entity_key, &metric, window, as_of).await
+        }
+        Request::Projection { entity_key, horizon, model, generation } => {
+            handle_projection(s, &entity_key, horizon, model.as_deref(), generation).await
+        }
+        Request::Backtest { model } => handle_backtest(s, &model).await,
+        Request::Rost { what } => s.send(Response::OutOfScope { what: format!("roster ({what})") }),
+        Request::TrackEntity { entity_key, label } => {
+            let was_new = match s.track.is_tracked(&entity_key) {
+                Ok(false) => {
+                    let _ = s.track.track(&entity_key, chrono::Utc::now().timestamp());
+                    true
+                }
+                Ok(true) => false,
+                Err(e) => {
+                    s.send(Response::Unsupported { reason: format!("track store: {e:#}") });
+                    return;
+                }
+            };
+            s.send(Response::SabrTracked { entity_key, label, was_new });
+            s.send(Response::SabrAlerts(s.track.alerts(false, 200).unwrap_or_default()));
+        }
+        Request::UntrackEntity { entity_key, label } => {
+            let was_tracked = s.track.untrack(&entity_key).unwrap_or(false);
+            s.send(Response::SabrUntracked { entity_key, label, was_tracked });
+            s.send(Response::SabrAlerts(s.track.alerts(false, 200).unwrap_or_default()));
+        }
+        Request::SabrAlerts => s.send(Response::SabrAlerts(s.track.alerts(false, 200).unwrap_or_default())),
     }
+}
+
+// ---- sabr arms ---------------------------------------------------------------------------
+
+/// Bundled per-role season log for the sample player (`p:660271:bat` / `p:660271:pit`).
+fn bundled_log(entity_key: &str) -> Result<sabr_model::event::EventLog, String> {
+    let (file, mode) = match entity_key {
+        "p:660271:bat" => ("ohtani-2025-bat.csv", SavantMode::Bat),
+        "p:660271:pit" => ("ohtani-2025-pit.csv", SavantMode::Pitch),
+        _ => return Err(format!("no bundled data for {entity_key}")),
+    };
+    let raw = match std::fs::read_to_string(crate::command::sample_root().join(file)) {
+        Ok(raw) => raw,
+        Err(e) => return Err(format!("bundled sample unavailable: {e}")),
+    };
+    let rev = sabr_model::event::SourceRev {
+        source: "savant",
+        url: "bundled sample (committed fixture)".into(),
+        fetched: 0,
+        sha256: [0; 32],
+    };
+    savant::parse_log(&raw, mode, 660_271, rev).map_err(|e| format!("bundled sample: {e:?}"))
+}
+
+/// The metric requested by code, rejecting role mismatches and unsupported entities.
+fn sought_metric(entity_key: &str, metric: &str) -> Result<&'static sabr_model::metric::Metric, String> {
+    let Some(m) = registry::by_id(metric) else {
+        return Err(format!("unknown metric '{metric}' (see the sabr registry)"));
+    };
+    let player = match entity_key.parse::<Entity>() {
+        Ok(Entity::Player(p)) => p,
+        _ => return Err(format!("'{entity_key}' is not a player entity")),
+    };
+    if player.role != m.role {
+        return Err(format!("metric '{metric}' is a {} metric; {entity_key} is a {} entity", m.role, player.role));
+    }
+    Ok(m)
+}
+
+/// Default trailing window per unit when none was typed: 50 PA / 30 pitches / 10 games-ish
+/// sensible starting points (spec 4.7 leaves the default open).
+fn default_window(metric: &sabr_model::metric::Metric) -> sabr_model::window::Window {
+    use sabr_model::window::Unit;
+    let (unit, n) = match metric.unit {
+        Unit::Pa => (Unit::Pa, 50),
+        Unit::Bf => (Unit::Bf, 50),
+        Unit::Ab => (Unit::Ab, 50),
+        Unit::Bip => (Unit::Bip, 50),
+        Unit::Pitch => (Unit::Pitch, 50),
+        Unit::Game => (Unit::Game, 10),
+    };
+    sabr_model::window::Window::Events { unit, n }
+}
+
+async fn handle_series(
+    s: &Arc<Shared>,
+    generation: u64,
+    entity_key: &str,
+    metric: &str,
+    window: Option<sabr_model::window::Window>,
+    as_of: Option<Date>,
+) {
+    let unsupported = |reason: String| Response::Unsupported { reason };
+    // A bare `CAST` (no typed metric) defaults to the role's headline rate.
+    let metric: String = if metric.is_empty() {
+        match entity_key.rsplit(':').next() {
+            Some("pit") => "pit:velocity".into(),
+            _ => "bat:woba".into(),
+        }
+    } else {
+        metric.to_owned()
+    };
+    let m = match sought_metric(entity_key, &metric) {
+        Ok(m) => m,
+        Err(reason) => return s.send(unsupported(reason)),
+    };
+    let window = window.unwrap_or_else(|| default_window(m));
+    let log = match bundled_log(entity_key) {
+        Ok(log) => log,
+        Err(reason) => {
+            return s.send(unsupported(reason));
+        }
+    };
+    let as_of = as_of.unwrap_or_else(chrono_today);
+    let points = tokio::task::spawn_blocking(move || sabr_model::series::derive(&[log], m, window, as_of)).await;
+    match points {
+        Ok(series) => {
+            if series.points.is_empty() {
+                s.send(unsupported(format!("series is empty for {entity_key} {metric} over {window:?}")));
+            } else {
+                s.send(Response::SabrSeries {
+                    generation,
+                    entity_key: entity_key.to_owned(),
+                    metric: metric.to_owned(),
+                    points: Arc::new(series.points),
+                });
+            }
+        }
+        Err(e) => s.send(unsupported(format!("derive failed: {e}"))),
+    }
+}
+
+async fn handle_projection(
+    s: &Arc<Shared>,
+    entity_key: &str,
+    horizon: crate::command::Horizon,
+    model: Option<&str>,
+    generation: u64,
+) {
+    let unsupported = |reason: String| Response::Unsupported { reason };
+    let Some(mlbam) = entity_id_of(entity_key) else {
+        return s.send(unsupported(format!("'{entity_key}' is not a player entity")));
+    };
+    let entity_key = entity_key.to_owned();
+    let entity_key_for_reason = entity_key.clone();
+    let model_name = model.unwrap_or("MARCEL").to_ascii_uppercase();
+    // Only the bundled batter has a projection path in this wave; the Marcel pitching model is
+    // a separate ticket.
+    let job = tokio::task::spawn_blocking(
+        move || -> Result<(String, sabr_forecast::marcel::Forecast, SabrModelStamp), String> {
+            let root = crate::command::sample_root().join("lahman");
+            let corpus = sabr_forecast::Corpus::from_lahman(&root).map_err(|e| format!("bundled corpus: {e}"))?;
+            let player_id = match crate::command::catalog() {
+                Some(cat) => cat.by_mlbam(mlbam).and_then(|r| r.key_bbref.clone()),
+                None => None,
+            };
+            let player_id = match player_id {
+                Some(id) if corpus.batting.iter().any(|l| l.player_id == id) => id,
+                _ => return Err(format!("no bundled corpus season line for {entity_key_for_reason}")),
+            };
+            if model_name != "MARCEL" {
+                return Err(format!("unknown model '{model_name}' (want MARCEL)"));
+            }
+            let constants = sabr_forecast::constants::Constants::prototype();
+            let year: i32 = chrono::Datelike::year(&chrono::Utc::now());
+            let last = corpus.batting.iter().map(|l| l.season).max().unwrap_or(0);
+            let (target, as_of_season) = match horizon {
+                // Rest-of-season: target the open (calendar) season; behind the corpus this
+                // degrades to the same fold shape as next-season.
+                crate::command::Horizon::RoS => {
+                    let now = u16::try_from(year).unwrap_or(0);
+                    (now.max(last), now.max(last) - 1)
+                }
+                crate::command::Horizon::Next => (last + 1, last),
+            };
+            let partial = (u16::try_from(year).is_ok_and(|y| y == target))
+                .then(|| corpus.batting.iter().find(|l| l.player_id == player_id && l.season == target).cloned())
+                .flatten();
+            let forecast =
+                sabr_forecast::marcel::project_marcel(&corpus, &constants, target, as_of_season, partial.as_ref())
+                    .remove(&player_id)
+                    .ok_or_else(|| format!("no projection for {player_id} in {target}"))?;
+            let stamp = SabrModelStamp {
+                id: "marcel.batting".into(),
+                version: "1.0.0".into(),
+                train_window: "3 prior seasons, weights 5/4/3".into(),
+                as_of: chrono_today(),
+                backtest_score: None,
+            };
+            Ok((player_id, forecast, stamp))
+        },
+    )
+    .await;
+    match job {
+        Err(e) => s.send(unsupported(format!("projection: {e}"))),
+        Ok(Err(e)) => s.send(unsupported(e)),
+        Ok(Ok((_player_id, forecast, mut stamp))) => {
+            stamp.backtest_score = s.btst_scores.lock().expect("btst lock").get("marcel.batting").copied();
+            let quantiles = artifact_bands(s.artifacts.as_ref(), &forecast);
+            s.send(Response::SabrProjection {
+                generation,
+                entity_key: entity_key.to_owned(),
+                stamp: Box::new(stamp),
+                woba: Some(forecast.woba),
+                pa: Some(forecast.pa),
+                reliability: Some(forecast.reliability),
+                quantiles: quantiles.map(Box::new),
+            });
+        }
+    }
+}
+
+async fn handle_backtest(s: &Arc<Shared>, model: &str) {
+    // Only Marcel (batting) is fit-able in this wave; the baseline shares the harness but not
+    // the scoring entry point used here.
+    let model = model.trim().to_ascii_uppercase();
+    if model != "MARCEL" {
+        return s.send(Response::Unsupported { reason: format!("unknown backtest model '{model}' (want MARCEL)") });
+    }
+    let result = tokio::task::spawn_blocking(move || {
+        let root = crate::command::sample_root().join("lahman");
+        let corpus = sabr_forecast::Corpus::from_lahman(&root).map_err(|e| format!("bundled corpus: {e}"))?;
+        let (folds, report) = sabr_forecast::harness::walk_forward(
+            &sabr_forecast::marcel::Marcel,
+            &corpus,
+            &sabr_forecast::Protocol::v1(),
+            &sabr_forecast::constants::Constants::prototype(),
+        );
+        let seasons = folds
+            .iter()
+            .map(|f| SabrSeasonScore {
+                season: f.season,
+                mae: f.score.mae,
+                pa_mae: f.score.pa_mae,
+                gate_pass: f.score.gate_pass,
+            })
+            .collect();
+        Ok::<_, String>((seasons, report.pooled_mae, report.gate.pass))
+    })
+    .await;
+    match result {
+        Err(e) => s.send(Response::Unsupported { reason: format!("backtest task: {e}") }),
+        Ok(Err(e)) => s.send(Response::Unsupported { reason: format!("backtest: {e}") }),
+        Ok(Ok((seasons, pooled_mae, gate_pass))) => {
+            s.btst_scores.lock().expect("btst lock").insert("marcel.batting".into(), pooled_mae);
+            s.send(Response::SabrBacktest { model: "MARCEL".into(), seasons, pooled_mae, gate_pass });
+        }
+    }
+}
+
+/// De-standardise the latest artifact's interval model for one forecast (DR-3.40 bands).
+/// `None` when no artifact exists yet or the model is in warm-up (DR-3.21a).
+fn artifact_bands(
+    index: Option<&sabr_forecast::artifact::ArtifactIndex>,
+    forecast: &sabr_forecast::marcel::Forecast,
+) -> Option<SabrQuantiles> {
+    let row = index?.latest("marcel.batting").ok()??;
+    let artifact = std::fs::read_to_string(&row.path).ok()?;
+    let artifact: sabr_forecast::artifact::Artifact = serde_json::from_str(&artifact).ok()?;
+    let model = artifact.intervals?;
+    let q = model.quantiles(forecast.bucket)?;
+    let d = sabr_forecast::intervals::IntervalModel::destandardise(q, forecast.pa.max(1.0));
+    Some(SabrQuantiles {
+        q05: forecast.woba + d.p05,
+        q10: forecast.woba + d.p10,
+        q25: forecast.woba + d.p25,
+        q50: forecast.woba + d.p50,
+        q75: forecast.woba + d.p75,
+        q90: forecast.woba + d.p90,
+        q95: forecast.woba + d.p95,
+    })
+}
+
+/// MLBAM id of a canonical player key (`p:660271:bat`).
+fn entity_id_of(entity_key: &str) -> Option<u32> {
+    match entity_key.parse::<Entity>() {
+        Ok(Entity::Player(p)) => Some(p.mlbam),
+        _ => None,
+    }
+}
+
+/// Today's UTC date (a live clock always yields a genuine calendar date).
+fn chrono_today() -> time::Date {
+    use chrono::Datelike;
+    let now = chrono::Utc::now().date_naive();
+    time::Date::from_calendar_date(now.year(), time::Month::try_from(now.month() as u8).unwrap(), now.day() as u8)
+        .expect("today is a genuine calendar date")
 }
 
 async fn trade(t: TradeRequest) -> TradeResponse {
@@ -923,6 +1385,9 @@ mod tests {
             series: Default::default(),
             cache: std::sync::Mutex::new(None),
             db: Mutex::new(Db::open_in_memory().unwrap()),
+            track: TrackStore::open_in_memory().unwrap(),
+            artifacts: None,
+            btst_scores: std::sync::Mutex::new(HashMap::new()),
             out,
             ctx: egui::Context::default(),
         };
@@ -943,5 +1408,184 @@ mod tests {
             i * 2
         })));
         assert_eq!(out, (0..20).map(|i| i * 2).collect::<Vec<_>>());
+    }
+
+    fn test_shared() -> (Arc<Shared>, mpsc::Receiver<Response>) {
+        let (out, rx) = mpsc::channel();
+        let s = Shared {
+            provider: std::sync::Arc::new(tr_data::sample::SampleProvider::at(0, 10)),
+            series: Default::default(),
+            cache: std::sync::Mutex::new(None),
+            db: Mutex::new(Db::open_in_memory().unwrap()),
+            track: TrackStore::open_in_memory().unwrap(),
+            artifacts: None,
+            btst_scores: std::sync::Mutex::new(HashMap::new()),
+            out,
+            ctx: egui::Context::default(),
+        };
+        (Arc::new(s), rx)
+    }
+
+    fn drain(rx: &mpsc::Receiver<Response>) -> Vec<Response> {
+        let mut out = Vec::new();
+        while let Ok(r) = rx.try_recv() {
+            out.push(r);
+        }
+        out
+    }
+
+    /// The bundled Ohtani yields a real derived series end to end; any other entity is an
+    /// explicit `Unsupported` (ticketed, not guessed).
+    #[test]
+    fn series_dispatch_bundled_vs_unsupported() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let (s, rx) = test_shared();
+            handle(
+                &s,
+                Request::Series {
+                    entity_key: "p:660271:bat".into(),
+                    metric: "bat:woba".into(),
+                    window: None,
+                    as_of: None,
+                    generation: 1,
+                },
+            )
+            .await;
+            let msgs = drain(&rx);
+            let Some(Response::SabrSeries { points, entity_key, metric, .. }) = msgs.first() else {
+                panic!("expected a Series response, got something else")
+            };
+            assert_eq!(entity_key, "p:660271:bat");
+            assert_eq!(metric, "bat:woba");
+            assert!(!points.is_empty());
+            assert!(points.iter().any(|p| p.value.is_some()), "at least one defined value");
+            // A bare `CAST` defaults to the role's headline metric.
+            handle(
+                &s,
+                Request::Series {
+                    entity_key: "p:660271:bat".into(),
+                    metric: String::new(),
+                    window: None,
+                    as_of: None,
+                    generation: 2,
+                },
+            )
+            .await;
+            assert!(
+                matches!(drain(&rx).first(), Some(Response::SabrSeries { metric, points, .. }) if metric == "bat:woba" && !points.is_empty()),
+                "bare CAST defaults to bat:woba"
+            );
+            // A non-bundled player and a role mismatch both answer `Unsupported`.
+            handle(
+                &s,
+                Request::Series {
+                    entity_key: "p:123456:bat".into(),
+                    metric: "bat:woba".into(),
+                    window: None,
+                    as_of: None,
+                    generation: 1,
+                },
+            )
+            .await;
+            handle(
+                &s,
+                Request::Series {
+                    entity_key: "p:660271:pit".into(),
+                    metric: "bat:woba".into(),
+                    window: None,
+                    as_of: None,
+                    generation: 1,
+                },
+            )
+            .await;
+            let unsupported: Vec<String> = drain(&rx)
+                .into_iter()
+                .filter_map(|r| match r {
+                    Response::Unsupported { reason } => Some(reason),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(unsupported.len(), 2, "{unsupported:?}");
+        });
+    }
+
+    /// The bundled pitcher series works too, and the Ohtani projection runs the real Marcel
+    /// over the bundled corpus with a registry stamp.
+    #[test]
+    fn projection_dispatch_marcel_with_stamp() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let (s, rx) = test_shared();
+            handle(
+                &s,
+                Request::Series {
+                    entity_key: "p:660271:pit".into(),
+                    metric: "pit:velocity".into(),
+                    window: None,
+                    as_of: None,
+                    generation: 1,
+                },
+            )
+            .await;
+            assert!(matches!(drain(&rx).first(), Some(Response::SabrSeries { .. })), "pitcher series");
+            handle(
+                &s,
+                Request::Projection {
+                    entity_key: "p:660271:bat".into(),
+                    horizon: crate::command::Horizon::Next,
+                    model: Some("MARCEL".into()),
+                    generation: 1,
+                },
+            )
+            .await;
+            let msgs = drain(&rx);
+            let Some(Response::SabrProjection { stamp, woba, pa, reliability, .. }) = msgs.first() else {
+                panic!("expected a Projection response, got something else")
+            };
+            assert_eq!(stamp.id, "marcel.batting");
+            assert_eq!(stamp.version, "1.0.0");
+            assert!(!stamp.train_window.is_empty());
+            assert_eq!(stamp.as_of, chrono_today());
+            let (woba, pa, reliability) =
+                (woba.unwrap_or_default(), pa.unwrap_or_default(), reliability.unwrap_or(-1.0));
+            assert!(woba > 0.2 && woba < 0.6, "marcel wOBA {woba}");
+            assert!(pa > 50.0, "marcel PA {pa}");
+            assert!((0.0..=1.0).contains(&reliability), "reliability {reliability}");
+        });
+    }
+
+    /// `NYM ROST` answers the documented OutOfScope stub.
+    #[test]
+    fn rost_dispatch_is_out_of_scope() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let (s, rx) = test_shared();
+            handle(&s, Request::Rost { what: "NYM".into() }).await;
+            assert!(matches!(drain(&rx).first(), Some(Response::OutOfScope { .. })));
+        });
+    }
+
+    /// Track/untrack round trip with alerts on the worker's track store.
+    #[test]
+    fn track_dispatch_round_trip() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let (s, rx) = test_shared();
+            handle(&s, Request::TrackEntity { entity_key: "p:660271:bat".into(), label: "Shohei Ohtani".into() }).await;
+            let msgs = drain(&rx);
+            assert!(
+                matches!(msgs.first(), Some(Response::SabrTracked { was_new: true, label, .. }) if label == "Shohei Ohtani"),
+                "first track is new"
+            );
+            assert!(matches!(msgs.get(1), Some(Response::SabrAlerts(_))), "alerts refreshed after track");
+            handle(&s, Request::TrackEntity { entity_key: "p:660271:bat".into(), label: "Shohei Ohtani".into() }).await;
+            assert!(matches!(drain(&rx).first(), Some(Response::SabrTracked { was_new: false, .. })), "re-track idempotent");
+            assert!(s.track.is_tracked("p:660271:bat").unwrap());
+            assert_eq!(s.track.tracked().unwrap().len(), 1);
+            handle(&s, Request::UntrackEntity { entity_key: "p:660271:bat".into(), label: "Shohei Ohtani".into() }).await;
+            assert!(matches!(drain(&rx).first(), Some(Response::SabrUntracked { was_tracked: true, .. })));
+            assert!(!s.track.is_tracked("p:660271:bat").unwrap());
+        });
     }
 }

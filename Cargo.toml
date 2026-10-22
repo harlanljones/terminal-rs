@@ -1,20 +1,27 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/broker", "crates/congress", "crates/data", "crates/chart", "crates/macos", "app"]
+members = ["crates/core", "crates/broker", "crates/congress", "crates/data", "crates/bdata", "crates/chart", "crates/model", "crates/forecast", "crates/retro", "crates/macos", "app"]
 default-members = ["app"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.95"
 
 [workspace.dependencies]
 tr-core = { path = "crates/core" }
+sabr-model = { path = "crates/model" }
+sabr-data = { path = "crates/bdata" }
+sabr-forecast = { path = "crates/forecast" }
+sabr-retro = { path = "crates/retro" }
+time = { version = "0.3", default-features = false, features = ["std"] }
 tr-broker = { path = "crates/broker" }
 tr-congress = { path = "crates/congress" }
 tr-data = { path = "crates/data" }
 tr-chart = { path = "crates/chart" }
 tr-macos = { path = "crates/macos" }
+zstd = "0.13"
+jiff = "0.2"
 anyhow = "1"
 thiserror = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }

@@ -3,6 +3,9 @@
 
 @group(1) @binding(0) var<storage, read> pts: array<vec2<f32>>;
 
+// Band points [x, lo, hi]; used only by vs_band (binding 0 pipelines leave it unused).
+@group(1) @binding(1) var<storage, read> bands: array<vec3<f32>>;
+
 fn finite(v: f32) -> bool {
     return v == v && abs(v) < 1e30;
 }
@@ -114,4 +117,24 @@ fn vs_dots(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> 
     let cx = x_ndc(a.x);
     let cy = y_ndc(a.y);
     return rect(vi, cx - hx, cx + hx, cy - hy, cy + hy, u.color);
+}
+
+// Filled band segment between points ii and ii+1 of a [x, lo, hi] buffer: one quad whose
+// lo/hi edges are linearly interpolated across the segment, so an envelope follows the
+// coarsened pyramid. Either edge undefined (NaN) drops the segment, keeping gaps open.
+@vertex
+fn vs_band(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
+    let a = bands[ii];
+    let b = bands[ii + 1u];
+    if (!(finite(a.y) && finite(a.z) && finite(b.y) && finite(b.z)) || a.x - u.rect.z >= u.anim.z) {
+        return degenerate();
+    }
+    let c = corner(vi);
+    let x = mix(x_ndc(a.x), x_ndc(b.x), c.x);
+    let lo = mix(y_ndc(a.y), y_ndc(b.y), c.x);
+    let hi = mix(y_ndc(a.z), y_ndc(b.z), c.x);
+    var out: VsOut;
+    out.pos = vec4<f32>(x, mix(lo, hi, c.y), 0.0, 1.0);
+    out.color = shade(u.color);
+    return out;
 }

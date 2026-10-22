@@ -68,6 +68,16 @@ struct DrawState {
     selected: Option<usize>,
 }
 
+/// Fan-chart data for one projection (DR-3.40): a median line across the horizon and three
+/// nested bands (50/80/95) as [lo, hi] pairs, all in the band's own index space.
+#[derive(Debug, Clone)]
+pub struct FanData {
+    pub median: Vec<f64>,
+    /// (lo, hi) per horizon point, innermost last: 50%, 80%, 95%.
+    pub bands: [(Vec<f64>, Vec<f64>); 3],
+    pub label: String,
+}
+
 pub struct ChartState {
     pub id: PaneId,
     pub symbol: String,
@@ -82,6 +92,9 @@ pub struct ChartState {
     pub compare: Option<String>,
 
     bars: Arc<Vec<Bar>>,
+    /// Fan-chart bands (DR-3.40): the projection's nested ribbons drawn over the price pane,
+    /// plus the median line. `None` for every non-projection chart.
+    pub fan: Option<FanData>,
     gpu: Option<SeriesGpu>,
     generation: u64,
     viewport: Option<Viewport>,
@@ -121,6 +134,7 @@ impl ChartState {
     pub fn new(id: PaneId, symbol: &str, tf: Timeframe) -> Self {
         Self {
             id,
+            fan: None,
             symbol: tr_data::security(symbol).key(),
             tf,
             chart_type: if tr_data::security(symbol).class == AssetClass::Govt {
@@ -771,6 +785,11 @@ impl ChartState {
             reveal,
             ..Style::default()
         };
+        // The fan median line rides the overlay list so it shares the pane's scale.
+        if let Some(fan) = &self.fan {
+            let line = tr_chart::scene::line_ref(&fan.median);
+            overlays.push(Overlay { line, color: [1.0, 1.0, 1.0, 0.9], kind: LineKind::Line, scale: 1.0 });
+        }
         let mut pane = PricePane {
             series: &gpu,
             chart_type: self.chart_type,
@@ -816,8 +835,28 @@ impl ChartState {
             let y = price_rect.top() + scale.y_of(*t) as f32;
             price_painter.hline(price_rect.x_range(), y, Stroke::new(1.0, theme::grid()));
         }
+        // Fan bands (DR-3.40): draw under the line? The GPU pass draws commands in order, so
+        // bands go FIRST in the frame and the price line overlays them. The band viewport spans
+        // the same index space as the series (the caller sized the horizon to the series len).
+        let mut cmds = out.cmds;
+        if let Some(fan) = &self.fan {
+            let len = fan.median.len();
+            if len >= 2 {
+                let mut style2 = style;
+                style2.color = theme::accent().to_normalized_gamma_f32();
+                let band_refs: [(&[f64], &[f64]); 3] =
+                    fan.bands.iter().map(|(lo, hi)| (lo.as_slice(), hi.as_slice())).collect::<Vec<_>>()[..]
+                        .try_into()
+                        .unwrap();
+                let (band_cmds, _scale) = scene::fan_bands(band_refs, &v, &style2);
+                // Bands first, then the series geometry on top.
+                let mut merged = band_cmds;
+                merged.extend(cmds);
+                cmds = merged;
+            }
+        }
         let frame_no = ui.ctx().cumulative_frame_nr();
-        let frame = Frame { pane: self.id * 8, frame_no, cmds: out.cmds };
+        let frame = Frame { pane: self.id * 8, frame_no, cmds };
         ui.painter().add(tr_chart::egui_wgpu::Callback::new_paint_callback(price_rect, ChartCallback(Arc::new(frame))));
 
         // Sub panes.
